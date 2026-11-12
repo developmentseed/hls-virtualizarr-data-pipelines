@@ -35,7 +35,7 @@ def test_worker_writes_child_fork(
 
 
 class _FakeProcessor:
-    """Processor stand-in: ``outcomes`` maps key -> stage to skip with (or None = ok)."""
+    """Processor stand-in; ``outcomes`` maps key -> skip stage (absent = ok)."""
 
     outcomes: dict[str, str | None] = {}
 
