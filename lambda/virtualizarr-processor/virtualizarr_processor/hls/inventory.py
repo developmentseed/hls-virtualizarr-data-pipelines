@@ -7,7 +7,9 @@ so nothing but the granule ID can be trusted across the whole record.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -101,16 +103,42 @@ def check_unique_times(ids: list[str]) -> None:
         raise ValueError("granules share an acquisition time:\n" + "\n".join(lines))
 
 
+class ArchiveForbidden(Exception):
+    """The archive refused access to a month file (HTTP 403)."""
+
+
+FETCH_ATTEMPTS = 3
+FETCH_TIMEOUT = 60
+
+
+def _download(uri: str, dest: Path) -> None:
+    """Stream ``uri`` to ``dest``, retrying 5xx/connection/timeout errors."""
+    for attempt in range(1, FETCH_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(uri, timeout=FETCH_TIMEOUT) as resp:
+                with open(dest, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+            return
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                raise MonthMissing(uri) from err
+            if err.code == 403:
+                raise ArchiveForbidden(
+                    f"403 forbidden fetching {uri}; check access/auth"
+                ) from err
+            if err.code < 500 or attempt == FETCH_ATTEMPTS:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError):
+            if attempt == FETCH_ATTEMPTS:
+                raise
+        time.sleep(2**attempt)
+
+
 def read_month_ids(uri: str) -> pa.Table:
     """Fetch one month's parquet over HTTPS (anonymous); read only ``id``."""
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "month.parquet"
-        try:
-            urllib.request.urlretrieve(uri, local)
-        except urllib.error.HTTPError as err:
-            if err.code in (403, 404):
-                raise MonthMissing(uri) from err
-            raise
+        _download(uri, local)
         return pq.read_table(local, columns=["id"])
 
 

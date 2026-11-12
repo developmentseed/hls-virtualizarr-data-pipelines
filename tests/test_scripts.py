@@ -77,7 +77,7 @@ def test_enqueue_message_shape_round_trips_through_handler(sqs_queue):
 def test_enqueue_since_and_from_file(sqs_queue, tmp_path):
     client, url = sqs_queue
     inv = tmp_path / "inventory.json"
-    inv.write_text(json.dumps({"ids": IDS}))
+    inv.write_text(json.dumps(IDS))
     enqueue_granules.main(
         ["--queue-url", url, "--from", str(inv), "--since", "2025-01-21"],
         sqs_client=client,
@@ -116,5 +116,6 @@ def test_build_inventory_writes_and_uploads(tmp_path):
         body = s3.get_object(Bucket="inv-bucket", Key="pre/inventory.json")[
             "Body"
         ].read()
-    assert json.loads(body)["ids"] == IDS[:3]
-    assert json.loads((tmp_path / "inventory.json").read_text())["ids"] == IDS[:3]
+    assert json.loads(body) == IDS[:3]
+    data = json.loads((tmp_path / "inventory.json").read_text())
+    assert isinstance(data, list) and data == IDS[:3]

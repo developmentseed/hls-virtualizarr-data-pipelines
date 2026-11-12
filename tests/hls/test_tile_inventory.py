@@ -1,8 +1,13 @@
+import io
+import urllib.error
 from datetime import date
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
+from virtualizarr_processor.hls import inventory
 from virtualizarr_processor.hls.inventory import (
+    ArchiveForbidden,
     MonthMissing,
     build_inventory,
     check_unique_times,
@@ -89,3 +94,47 @@ def test_build_inventory_other_missing_is_fatal():
             reader=_reader(missing=["month=2/"]),
             today=date(2025, 6, 1),
         )
+
+
+def _parquet_bytes():
+    buf = io.BytesIO()
+    pq.write_table(pa.table({"id": [L30_A]}), buf)
+    return buf.getvalue()
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("u", code, "x", {}, None)
+
+
+def _patch_urlopen(monkeypatch, outcomes):
+    calls = []
+
+    def fake(uri, timeout):
+        calls.append(timeout)
+        o = outcomes.pop(0)
+        if isinstance(o, Exception):
+            raise o
+        return io.BytesIO(o)
+
+    monkeypatch.setattr(inventory.urllib.request, "urlopen", fake)
+    monkeypatch.setattr(inventory.time, "sleep", lambda s: None)
+    return calls
+
+
+def test_read_month_ids_404_is_month_missing(monkeypatch):
+    _patch_urlopen(monkeypatch, [_http_error(404)])
+    with pytest.raises(MonthMissing):
+        inventory.read_month_ids("https://x/y.parquet")
+
+
+def test_read_month_ids_403_is_clear_error(monkeypatch):
+    calls = _patch_urlopen(monkeypatch, [_http_error(403)])
+    with pytest.raises(ArchiveForbidden, match="forbidden"):
+        inventory.read_month_ids("https://x/y.parquet")
+    assert len(calls) == 1
+
+
+def test_read_month_ids_retries_5xx(monkeypatch):
+    calls = _patch_urlopen(monkeypatch, [_http_error(500), _parquet_bytes()])
+    assert inventory.read_month_ids("https://x/y.parquet")["id"].to_pylist() == [L30_A]
+    assert calls == [60, 60]

@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None, *, sqs_client=None) -> int:  # noqa: ANN
 
     ids = list(args.ids)
     if args.from_file:
-        ids += json.loads(args.from_file.read_text())["ids"]
+        ids += json.loads(args.from_file.read_text())
     if not ids:
         p.error("give granule IDs or --from inventory.json")
     granules = [parse_granule_id(i) for i in ids]

@@ -50,8 +50,8 @@ def main(
     )
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / "inventory.json"
-    payload = {"tile": args.tile, "product": args.product, "ids": ids}
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(ids, indent=2))
+    print(f"{args.tile} {args.product}")
     if ids:
         first, last = parse_granule_id(ids[0]).time, parse_granule_id(ids[-1]).time
         print(f"{len(ids)} granules, {first.isoformat()} to {last.isoformat()}")
