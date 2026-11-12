@@ -8,7 +8,7 @@ docs/superpowers/spikes/2026-11-11-time-stack-findings.md section 3.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -23,6 +23,7 @@ from virtualizarr_processor.hls.conventions import (
     MULTISCALES_GROUP,
     band_group_attrs,
 )
+from virtualizarr_processor.hls.encoding import BandEncoding
 from virtualizarr_processor.hls.granule import Granule
 from virtualizarr_processor.hls.grid import TileGrid, level_coords
 from virtualizarr_processor.hls.pyramid import (
@@ -89,6 +90,7 @@ def declare_cube(
     grid: TileGrid,
     times: Sequence[datetime],
     reference: dict[str, Pyramid],
+    encodings: Mapping[str, BandEncoding] | None = None,
 ) -> None:
     """Declare every (band, level) of ``reference`` as an empty ``(time, y, x)`` array.
 
@@ -96,7 +98,14 @@ def declare_cube(
     the reference granule's levels, with a leading ``time`` axis chunked by 1
     and no chunks written. ``y``/``x`` come from ``grid`` only (never the
     granule's CRS). Each band group gets its convention attributes.
+
+    With ``encodings``, every band must have one whose dtype matches the
+    reference (``ValueError`` otherwise, before anything is written); its fill
+    value replaces the reference's and its CF attributes (``_FillValue``,
+    ``scale_factor``, ``add_offset``) go on the array.
     """
+    if encodings is not None:
+        _check_encodings(reference, encodings)
     tile = grid.mgrs_id
     time_values = _datetime64(times)
     for band, pyramid in reference.items():
@@ -113,6 +122,10 @@ def declare_cube(
             }
             spec["dimension_names"] = ["time", "y", "x"]
             spec["attributes"] = {}
+            attrs: dict[str, Any] = {}
+            if encodings is not None:
+                spec["fill_value"] = encodings[band].fill_value
+                attrs = encodings[band].attributes()
             gy, gx = src.manifest.shape_chunk_grid
             empty = ManifestArray(
                 chunkmanifest=ChunkManifest({}, shape=(len(time_values), gy, gx)),
@@ -120,7 +133,7 @@ def declare_cube(
             )
             y, x = level_coords(grid, ny, nx)
             cube = xr.Dataset(
-                {band: xr.Variable(("time", "y", "x"), empty)},
+                {band: xr.Variable(("time", "y", "x"), empty, attrs=attrs)},
                 coords={"time": ("time", time_values), "y": ("y", y), "x": ("x", x)},
             )
             cube["time"].encoding.update(TIME_ENCODING)
@@ -128,6 +141,22 @@ def declare_cube(
         zarr.open_group(store, path=f"{tile}/{band}", mode="a").attrs.update(
             band_group_attrs(grid, levels=len(pyramid), band=band)
         )
+
+
+def _check_encodings(
+    reference: dict[str, Pyramid], encodings: Mapping[str, BandEncoding]
+) -> None:
+    for band, pyramid in reference.items():
+        if band not in encodings:
+            raise ValueError(f"{band}: no documented encoding")
+        for level, level_ds in pyramid.items():
+            (name,) = list(level_ds.data_vars)
+            got = level_ds[name].data.metadata.data_type.to_native_dtype()
+            if got != np.dtype(encodings[band].dtype):
+                raise ValueError(
+                    f"{band} level {level}: reference dtype {got}, "
+                    f"documented {encodings[band].dtype}"
+                )
 
 
 def granule_levels(

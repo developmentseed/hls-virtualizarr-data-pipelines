@@ -39,6 +39,7 @@ from virtualizarr_processor.hls.cube import (
     store_times,
     write_granule,
 )
+from virtualizarr_processor.hls.encoding import BAND_ENCODINGS, restore_untagged_fill
 from virtualizarr_processor.hls.granule import BANDS, Granule, granule_from_key
 from virtualizarr_processor.hls.grid import TileGrid, tile_grid
 from virtualizarr_processor.hls.manifests import manifest_splitting
@@ -277,10 +278,15 @@ class Processor:
         raise AssertionError("unreachable")
 
     def _open(self, granule: Granule, registry: Any) -> dict[str, Pyramid]:
-        """Every band's pyramid, each open retried; raises before any write."""
-        return open_granule(
+        """Every band's pyramid, each open retried; raises before any write.
+
+        A band whose COG lost its nodata tag gets its documented fill back
+        (see ``hls.encoding``) before anything is checked against the cube.
+        """
+        pyramids = open_granule(
             granule, self.bands, self._open_one, registry, self.locator.read_url
         )
+        return restore_untagged_fill(BAND_ENCODINGS[self.product], pyramids)
 
     # --- repositories -------------------------------------------------------
 
@@ -327,7 +333,13 @@ class Processor:
 
         repo.create_branch("backfill", repo.lookup_branch("main"))
         session = repo.writable_session("backfill")
-        declare_cube(session.store, self.grid, times, reference)
+        declare_cube(
+            session.store,
+            self.grid,
+            times,
+            reference,
+            encodings=BAND_ENCODINGS[self.product],
+        )
         snapshot = cast(
             str,
             session.commit(

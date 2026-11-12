@@ -31,7 +31,7 @@ def test_check_level_accepts_matching(hls_repo, fake_assets):
     [
         ("shape", {"levels": ((16, 16), (8, 8))}),
         ("chunks", {"chunks": (2, 2)}),
-        ("dtype", {"dtype": "int16"}),
+        ("dtype", {"dtype": "uint16", "fill_value": 0}),
     ],
 )
 def test_check_level_rejects(hls_repo, fake_assets, field, kwargs):
@@ -63,7 +63,8 @@ def test_check_level_accepts_reopened_declared(hls_repo, fake_assets):
         name="d2",
         shape=(3, 8, 8),
         chunks=(1, 4, 4),
-        dtype="uint16",
+        dtype="int16",
+        fill_value=-9999,
         compressors=[ZstdCodec()],
         zarr_format=3,
     )

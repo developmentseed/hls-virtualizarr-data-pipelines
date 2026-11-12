@@ -15,6 +15,7 @@ import xarray as xr
 import zarr
 from virtualizarr.manifests import ChunkManifest, ManifestArray
 from virtualizarr_processor.hls.assets import asset_key
+from virtualizarr_processor.hls.encoding import BAND_ENCODINGS
 from virtualizarr_processor.hls.granule import BANDS, parse_granule_id
 from virtualizarr_processor.hls.grid import TileGrid
 from virtualizarr_processor.hls.pyramid import Pyramid
@@ -76,14 +77,20 @@ class FakeAssets:
         *,
         levels: tuple[tuple[int, int], ...] = ((8, 8), (4, 4)),
         chunks: tuple[int, int] = (4, 4),
-        dtype: str = "uint16",
-        fill_value: int = 0,
+        dtype: str | None = None,
+        fill_value: int | None = None,
         compress: bool = False,
     ) -> None:
         """Write one asset: every level's chunks, each filled with ``value``.
 
         Chunks are stored back to back, level 0 first, row-major within a level.
+        ``dtype`` and ``fill_value`` default to the band's documented encoding.
         """
+        documented = BAND_ENCODINGS["L30"].get(band)
+        if dtype is None:
+            dtype = documented.dtype if documented else "uint16"
+        if fill_value is None:
+            fill_value = documented.fill_value if documented else 0
         cy, cx = chunks
         chunk = np.full((cy, cx), value, dtype=dtype).tobytes()
         n_chunks = sum(-(-ny // cy) * -(-nx // cx) for ny, nx in levels)

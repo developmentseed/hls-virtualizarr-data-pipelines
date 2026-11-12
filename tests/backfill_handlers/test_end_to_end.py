@@ -62,7 +62,7 @@ def test_full_backfill_chain(
     assert len(groups) == 15 * 2
     for g in groups:
         band = g.split("/")[1]
-        ds = xr.open_zarr(store, group=g, consolidated=False)
+        ds = xr.open_zarr(store, group=g, consolidated=False, mask_and_scale=False)
         assert [int(ds[band].isel(time=i).max()) for i in range(6)] == [
             1,
             2,

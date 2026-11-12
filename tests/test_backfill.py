@@ -26,7 +26,12 @@ def _worker(processor: Processor, shared_fork_bytes: bytes, keys: list[str]) -> 
 
 def _b04_values(processor: Processor, branch: str) -> list[int]:
     store = processor.open_backfill_repo().readonly_session(branch).store
-    ds = xr.open_zarr(store, group="T13SDA/B04/multiscales/0", consolidated=False)
+    ds = xr.open_zarr(
+        store,
+        group="T13SDA/B04/multiscales/0",
+        consolidated=False,
+        mask_and_scale=False,
+    )
     return [int(ds.B04.isel(time=i).max()) for i in range(ds.sizes["time"])]
 
 
@@ -70,7 +75,8 @@ def test_a_skipped_granule_leaves_a_fill_valued_step(
 
     assert results == [True, True, False, True, True, True]
     assert [r.granule_id for r in processor.skipped] == [IDS[2]]
-    assert _b04_values(processor, "backfill") == [1, 2, 0, 4, 5, 6]
+    # a skipped granule's step holds B04's documented fill
+    assert _b04_values(processor, "backfill") == [1, 2, -9999, 4, 5, 6]
 
 
 def test_merge_and_commit_with_no_changes_raises_nothing_to_commit(tmp_path):

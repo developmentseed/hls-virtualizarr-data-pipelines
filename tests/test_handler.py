@@ -78,7 +78,12 @@ def key(granule_id: str, band: str = "B04") -> str:
 
 def main_times(factory: Callable[[], Processor]) -> list[str]:
     store = factory().initialize_repo().readonly_session("main").store
-    ds = xr.open_zarr(store, group="T13SDA/B04/multiscales/0", consolidated=False)
+    ds = xr.open_zarr(
+        store,
+        group="T13SDA/B04/multiscales/0",
+        consolidated=False,
+        mask_and_scale=False,
+    )
     return [str(t)[:10] for t in ds.time.values]
 
 

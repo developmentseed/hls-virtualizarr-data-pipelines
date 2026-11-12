@@ -13,6 +13,7 @@ from fakes import FAKE_GRID, local_locator, write_all_bands
 from virtualizarr_processor import processor as processor_module
 from virtualizarr_processor.backfill import merge_and_commit, promote
 from virtualizarr_processor.hls.cube import level_group, level_groups
+from virtualizarr_processor.hls.encoding import BAND_ENCODINGS
 from virtualizarr_processor.hls.granule import BANDS, parse_granule_id
 from virtualizarr_processor.processor import (
     LpDaacLocator,
@@ -33,6 +34,7 @@ def open_level(repo, branch, band, level):
         repo.readonly_session(branch).store,
         group=level_group(TILE, band, level),
         consolidated=False,
+        mask_and_scale=False,
     )
 
 
@@ -41,27 +43,33 @@ def time_len(repo, branch):
 
 
 def chunks_at_time(store, index):
-    """Every chunk value at one time step, across every (band, level) array."""
+    """(values, fill) at one time step, for every (band, level) array."""
     out = []
     for g in level_groups(store, TILE):
         band = g.split("/")[1]
-        out.append(np.asarray(zarr.open_array(store, path=f"{g}/{band}")[index]))
+        array = zarr.open_array(store, path=f"{g}/{band}")
+        out.append((np.asarray(array[index]), array.fill_value))
     return out
 
 
 def fork_has_no_chunks_at_time(fork, index):
-    # unwritten chunks read as the fill value (0); the fakes write values >= 1
-    return all((a == 0).all() for a in chunks_at_time(fork.store, index))
+    # unwritten chunks read as the array's fill value; the fakes write values >= 1
+    return all((a == fill).all() for a, fill in chunks_at_time(fork.store, index))
+
+
+#: Stands for "this band's documented fill" in ``assert_monotonic_and_values``.
+FILL = "fill"
 
 
 def assert_monotonic_and_values(repo, branch, values):
     store = repo.readonly_session(branch).store
     for g in level_groups(store, TILE):
         band = g.split("/")[1]
-        ds = xr.open_zarr(store, group=g, consolidated=False)
+        ds = xr.open_zarr(store, group=g, consolidated=False, mask_and_scale=False)
         assert (np.diff(ds.time.values) > np.timedelta64(0)).all(), g
         got = [int(ds[band].isel(time=i).max()) for i in range(ds.sizes["time"])]
-        assert got == values, g
+        fill = BAND_ENCODINGS["L30"][band].fill_value
+        assert got == [fill if v == FILL else v for v in values], g
 
 
 @pytest.fixture
@@ -207,7 +215,7 @@ def test_initialize_backfill_store_declares_sorted_times_from_newest(
         dtype="datetime64[ns]",
     )
     for g in groups:
-        ds = xr.open_zarr(store, group=g, consolidated=False)
+        ds = xr.open_zarr(store, group=g, consolidated=False, mask_and_scale=False)
         np.testing.assert_array_equal(ds.time.values, want)
 
 
@@ -363,7 +371,7 @@ def test_process_file_fills_a_skipped_backfill_slot(processor, fake_assets, hls_
     assert processor.process_backfill_file(GID_2025B, fork)
     merge_and_commit(hls_repo, [pickle.dumps(fork)], message="p0")
     promote(hls_repo)
-    assert_monotonic_and_values(hls_repo, "main", [1, 0, 3])
+    assert_monotonic_and_values(hls_repo, "main", [1, FILL, 3])
 
     write_all_bands(fake_assets, GID_2025A, 2)
     session = processor.initialize_session(hls_repo)
@@ -464,3 +472,63 @@ def test_registry_failure_fails_the_worker_rather_than_skipping(
     with pytest.raises(PermissionError):
         p.process_backfill_file(GID_2025A, initialized)
     assert p.skipped == []
+
+
+# --- documented encodings ---------------------------------------------------
+
+
+def test_untagged_newest_granule_does_not_skip_the_archive(
+    processor, fake_assets, hls_repo
+):
+    """The 2026 regression: the newest granule's angle COGs lost their nodata
+    tag (fill reads 0). The cube still declares the documented fill, so the
+    tagged older granules and the untagged newest one all write."""
+    write_all_bands(fake_assets, GID_2013, 1)
+    write_all_bands(fake_assets, GID_2025A, 2)
+    write_all_bands(fake_assets, GID_2025B, 3)
+    for band in ("SAA", "SZA", "VAA", "VZA"):
+        fake_assets.write(GID_2025B, band, 3, fill_value=0)
+    ids = [GID_2013, GID_2025A, GID_2025B]
+    processor.initialize_backfill_store(hls_repo, ids)
+    fork = hls_repo.writable_session("backfill").fork()
+    assert [processor.process_backfill_file(g, fork) for g in ids] == [True] * 3
+    assert processor.skipped == []
+
+    store = fork.store
+    for band, encoding in BAND_ENCODINGS["L30"].items():
+        for level in (0, 1):
+            array = zarr.open_array(
+                store, path=f"{level_group(TILE, band, level)}/{band}"
+            )
+            assert array.fill_value == encoding.fill_value, (band, level)
+            assert dict(array.attrs) == encoding.attributes(), (band, level)
+
+
+def test_cube_decodes_with_documented_scale_and_fill(processor, fake_assets, hls_repo):
+    write_all_bands(fake_assets, GID_2025A, 2)
+    write_all_bands(fake_assets, GID_2025B, 3)
+    fake_assets.missing(GID_2025A, "SAA")  # step 0 stays fill-valued
+    processor.initialize_backfill_store(hls_repo, [GID_2025A, GID_2025B])
+    fork = hls_repo.writable_session("backfill").fork()
+    assert not processor.process_backfill_file(GID_2025A, fork)
+    assert processor.process_backfill_file(GID_2025B, fork)
+    merge_and_commit(hls_repo, [pickle.dumps(fork)], message="p0")
+
+    saa = xr.open_zarr(  # decoded, as a reader would open it
+        hls_repo.readonly_session("backfill").store,
+        group=level_group(TILE, "SAA", 0),
+        consolidated=False,
+    )
+    assert np.isnan(saa.SAA.isel(time=0)).all()
+    np.testing.assert_allclose(saa.SAA.isel(time=1), 0.03)
+
+
+def test_attributes_survive_forward_append_and_sort(processor, fake_assets, backfilled):
+    write_all_bands(fake_assets, GID_2013, 1)  # out of order: append, then sort
+    session = processor.initialize_session(backfilled)
+    assert processor.process_file(GID_2013, session)
+    processor.commit_processed_files(session)
+    store = backfilled.readonly_session("main").store
+    for band in ("B04", "Fmask", "SAA"):
+        array = zarr.open_array(store, path=f"{level_group(TILE, band, 0)}/{band}")
+        assert dict(array.attrs) == BAND_ENCODINGS["L30"][band].attributes(), band
