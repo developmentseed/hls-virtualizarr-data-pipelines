@@ -40,9 +40,24 @@ class StackSettings(BaseSettings):
     SQS_BATCH_SIZE: int = 10
 
     # ARN of the Secrets Manager secret holding Earthdata {username, password}.
-    # Optional: required only for reading protected GES DISC granules. When unset,
-    # no secret resource or IAM grant is created.
+    # Optional: required only for reading protected LP DAAC granules. When unset,
+    # no secret resource or IAM grant is created. Granted (and exposed as an env
+    # var) only to the functions that read COGs: backfill init and worker, and the
+    # forward process_messages Lambda.
     EARTHDATA_SECRET_ARN: str | None = None
+
+    # The one HLS tile this deployment builds a cube for, and its product.
+    # Passed to every processor Lambda as MGRS_TILE / HLS_PRODUCT.
+    MGRS_TILE: str = "T13SDA"
+    HLS_PRODUCT: Literal["L30"] = "L30"
+    # How granule COGs are read: direct S3 (same-region, us-west-2) or HTTPS.
+    LPDAAC_ACCESS: Literal["s3", "https"] = "s3"
+    # Icechunk chunk-ref cache size (ICECHUNK_NUM_CHUNK_REFS). The spike measured
+    # 8,010 chunk refs per granule: 15 bands x (225 + 225 + 64 + 16 + 4) = 534
+    # chunks per band. One backfill partition of BACKFILL_PARTITION_SIZE = 500
+    # granules is 500 x 8,010 = 4,005,000 refs; 5,000,000 leaves headroom.
+    # Scale this with BACKFILL_PARTITION_SIZE (about 8,010 x partition size).
+    ICECHUNK_NUM_CHUNK_REFS: int = 5_000_000
 
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None

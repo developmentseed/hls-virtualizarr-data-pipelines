@@ -111,8 +111,18 @@ class VirtualizarrSqsStack(Stack):
             self.processor_env["ICECHUNK_REGION"] = settings.ICECHUNK_REGION
         if settings.ICECHUNK_PREFIX:
             self.processor_env["ICECHUNK_PREFIX"] = settings.ICECHUNK_PREFIX
+        hls_env = {
+            "MGRS_TILE": settings.MGRS_TILE,
+            "HLS_PRODUCT": settings.HLS_PRODUCT,
+            "LPDAAC_ACCESS": settings.LPDAAC_ACCESS,
+            "ICECHUNK_NUM_CHUNK_REFS": str(settings.ICECHUNK_NUM_CHUNK_REFS),
+        }
+        self.processor_env.update(hls_env)
+        # The processor fetches the Earthdata secret whenever the ARN is set, so
+        # the ARN goes only to functions that also get the grant (COG readers).
+        self.cog_reader_env = dict(self.processor_env)
         if settings.EARTHDATA_SECRET_ARN:
-            self.processor_env["EARTHDATA_SECRET_ARN"] = settings.EARTHDATA_SECRET_ARN
+            self.cog_reader_env["EARTHDATA_SECRET_ARN"] = settings.EARTHDATA_SECRET_ARN
 
         self.earthdata_secret = (
             secretsmanager.Secret.from_secret_complete_arn(
@@ -147,7 +157,7 @@ class VirtualizarrSqsStack(Stack):
             architecture=_lambda.Architecture.X86_64,
             timeout=Duration.minutes(5),
             memory_size=2048,
-            environment=dict(self.processor_env),
+            environment=dict(self.cog_reader_env),
         )
 
         self.queue.grant_consume_messages(self.process_messages_lambda)
@@ -205,8 +215,6 @@ class VirtualizarrSqsStack(Stack):
             )
 
             self.icechunk_bucket.grant_read_write(self.initialize_icechunk_lambda)
-            if self.earthdata_secret is not None:
-                self.earthdata_secret.grant_read(self.initialize_icechunk_lambda)
 
             if settings.ICECHUNK_BUCKET:
                 # Trigger it once on first deploy
@@ -281,8 +289,6 @@ class VirtualizarrSqsStack(Stack):
                 environment=dict(self.processor_env),
             )
             self.icechunk_bucket.grant_read_write(self.gc_job.role)
-            if self.earthdata_secret is not None:
-                self.earthdata_secret.grant_read(self.gc_job.role)
 
             self.cron_rule = events.Rule(
                 self,
@@ -338,6 +344,7 @@ class VirtualizarrSqsStack(Stack):
                 max_items_per_batch=settings.BACKFILL_MAX_ITEMS_PER_BATCH,
                 max_concurrency=settings.BACKFILL_MAX_CONCURRENCY,
                 earthdata_secret_arn=settings.EARTHDATA_SECRET_ARN,
+                processor_env=hls_env,
             )
 
             CfnOutput(

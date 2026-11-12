@@ -12,10 +12,10 @@ from constructs import Construct
 
 _ACTIONS = ["partition", "init", "fork", "worker", "reduce", "promote"]
 
-# Actions whose handler opens the icechunk repo and therefore needs Earthdata
-# credentials to authorize reading protected GES DISC virtual chunks. ``partition``
-# only reads the inventory object, so it is excluded.
-_REPO_ACTIONS = ["init", "fork", "worker", "reduce", "promote"]
+# Actions that read COGs (init opens the newest granule as the reference, worker
+# parses granules) and so need Earthdata credentials. The others open the repo
+# only; they get no secret ARN and no grant.
+_COG_ACTIONS = ["init", "worker"]
 
 
 class BackfillPipeline(Construct):
@@ -34,6 +34,7 @@ class BackfillPipeline(Construct):
         icechunk_region: str | None = None,
         data_bucket_name: str,
         earthdata_secret_arn: str | None = None,
+        processor_env: dict[str, str] | None = None,
         partition_size: int,
         max_items_per_batch: int,
         max_concurrency: int,
@@ -51,8 +52,8 @@ class BackfillPipeline(Construct):
             env["ICECHUNK_REGION"] = icechunk_region
         if icechunk_prefix:
             env["ICECHUNK_PREFIX"] = icechunk_prefix
-        if earthdata_secret_arn:
-            env["EARTHDATA_SECRET_ARN"] = earthdata_secret_arn
+        # MGRS_TILE, HLS_PRODUCT, LPDAAC_ACCESS, ICECHUNK_NUM_CHUNK_REFS.
+        env.update(processor_env or {})
 
         earthdata_secret = (
             secretsmanager.Secret.from_secret_complete_arn(
@@ -78,10 +79,11 @@ class BackfillPipeline(Construct):
                 memory_size=2048,
                 environment=dict(env),
             )
+            if earthdata_secret_arn and action in _COG_ACTIONS:
+                fn.add_environment("EARTHDATA_SECRET_ARN", earthdata_secret_arn)
             icechunk_bucket.grant_read_write(fn)
             backfill_bucket.grant_read_write(fn)
-            # Handlers that open the repo need to read the Earthdata secret.
-            if earthdata_secret is not None and action in _REPO_ACTIONS:
+            if earthdata_secret is not None and action in _COG_ACTIONS:
                 earthdata_secret.grant_read(fn)
             self.functions[action] = fn
 

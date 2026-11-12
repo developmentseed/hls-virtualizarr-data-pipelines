@@ -38,3 +38,12 @@ def test_forward_queue_disabled_explicit_with_backfill_off() -> None:
         FORWARD_QUEUE_ENABLED=False,
     )
     assert settings.FORWARD_QUEUE_ENABLED is False
+
+
+def test_hls_settings_defaults() -> None:
+    settings = StackSettings(STAGE="dev", ACCOUNT_ID="111111111111")
+    assert settings.MGRS_TILE == "T13SDA"
+    assert settings.HLS_PRODUCT == "L30"
+    assert settings.LPDAAC_ACCESS == "s3"
+    assert settings.EARTHDATA_SECRET_ARN is None
+    assert settings.ICECHUNK_NUM_CHUNK_REFS == 5_000_000
