@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ import xarray as xr
 import zarr
 from virtualizarr.manifests import ChunkManifest, ManifestArray
 from virtualizarr_processor.hls.assets import asset_key
-from virtualizarr_processor.hls.granule import parse_granule_id
+from virtualizarr_processor.hls.granule import BANDS, parse_granule_id
 from virtualizarr_processor.hls.grid import TileGrid
 from virtualizarr_processor.hls.pyramid import Pyramid
 from zarr.codecs import BytesCodec, ZstdCodec
@@ -157,6 +158,42 @@ def _pyramid(path: str, levels, chunks, dtype, fill_value=0, compress=False) -> 
         # (and attributes) off the ManifestArray and onto the xarray Variable
         out[level] = xr.Dataset({"band_data": array.to_virtual_variable()})
     return out
+
+
+def open_local_repo(repo_path: Path, assets_root: Path) -> icechunk.Repository:
+    """Open (or create) a filesystem repo that authorizes ``file://{assets_root}/``."""
+    Path(assets_root).mkdir(parents=True, exist_ok=True)
+    prefix = f"file://{assets_root}/"
+    config = icechunk.RepositoryConfig.default()
+    config.set_virtual_chunk_container(
+        icechunk.VirtualChunkContainer(
+            prefix, icechunk.local_filesystem_store(str(assets_root))
+        )
+    )
+    return icechunk.Repository.open_or_create(
+        storage=icechunk.local_filesystem_storage(str(repo_path)),
+        config=config,
+        authorize_virtual_chunk_access={
+            prefix: icechunk.credentials.LocalFileSystemAccess
+        },
+    )
+
+
+def write_all_bands(
+    fake_assets: FakeAssets, granule_id: str, value: int, **layout: Any
+) -> None:
+    """Write every L30 band of one granule, each filled with ``value``."""
+    for band in BANDS["L30"]:
+        fake_assets.write(granule_id, band, value, **layout)
+
+
+@dataclass
+class Backfill:
+    """What the backfill-handler tests' ``hls_backfill`` fixture sets up."""
+
+    inventory_uri: str
+    granule_ids: list[str]
+    processor: Callable[[], Any]
 
 
 def declare_like(repo: icechunk.Repository, level_ds: xr.Dataset, n_time: int = 3):

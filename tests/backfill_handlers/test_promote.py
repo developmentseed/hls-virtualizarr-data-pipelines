@@ -1,22 +1,17 @@
-import pathlib
 from unittest.mock import MagicMock
 
-import pytest
 from backfill_handlers import init, promote
-from virtualizarr_processor.processor import Processor
+from fakes import Backfill
 
 
 def test_promote_moves_main_to_backfill_tip(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
+    hls_backfill: Backfill,
     lambda_context: MagicMock,
 ) -> None:
-    monkeypatch.delenv("ICECHUNK_BUCKET", raising=False)
-    monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
-    init.handler({}, lambda_context)
+    init.handler({"inventory_uri": hls_backfill.inventory_uri}, lambda_context)
 
     result = promote.handler({}, lambda_context)
 
     assert result["promoted"] is True
-    repo = Processor().open_backfill_repo()
+    repo = hls_backfill.processor().open_backfill_repo()
     assert repo.lookup_branch("main") == repo.lookup_branch("backfill")

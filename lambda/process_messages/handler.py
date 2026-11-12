@@ -17,8 +17,9 @@ commit would delete messages for files that were never stored, which is what an
 earlier version of this handler did.
 
 A redelivered batch re-runs against a fresh session, which is safe because
-`write_plan` recomputes each cycle's placement from the axis it finds: a cycle
-another invocation has since written comes back as a region write, not an append.
+the processor recomputes each granule's placement from the axis it finds: a
+granule another invocation has since written comes back as a region write, not
+an append.
 """
 
 import json

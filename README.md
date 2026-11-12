@@ -84,7 +84,7 @@ each running Fork → an inner Distributed Map of parallel worker Lambdas → Re
 For backfill your processor needs to implement these [VirtualizarrProcessor protocol](./lambda/virtualizarr-processor/virtualizarr_processor/typing.py)
 methods:
 
-- **initialize_backfill_store** Set up the empty Icechunk store workers will fill. Runs once at Init: it creates a backfill branch off the current main tip (staging the load to the side until the final promote), creates the array(s) at their full final shape with coordinate arrays (e.g. time) written as metadata, and commits. It must commit and leave nothing pending, since workers fork from this snapshot and a fork can only be merged if its base is a clean committed snapshot.
+- **initialize_backfill_store** Set up the empty Icechunk store workers will fill. Runs once at Init with the backfill inventory (`initialize_backfill_store(repo, granule_ids)`; the Init handler reads the JSON list from `inventory_uri`): it creates a backfill branch off the current main tip (staging the load to the side until the final promote), creates the array(s) at their full final shape with coordinate arrays (e.g. time) written as metadata, and commits. It must commit and leave nothing pending, since workers fork from this snapshot and a fork can only be merged if its base is a clean committed snapshot.
 
 - **open_backfill_repo** Open the Icechunk repository and return a Repository handle. Every backfill step that touches the store (Init, Fork, Reduce, Promote) calls this to get the same `repo`.
 
@@ -166,12 +166,10 @@ The `processor` protocol methods below drive **forward processing**:
   as extra protocol methods, because reshaping a dataset for a region write
   depends on the dataset: variables that do not carry the append dimension
   (static grid coordinates, say) have to be dropped, since `region="auto"` has
-  no slice to resolve for them. The reference implementation's
-  `store_append_dimension` and `write_plan` in
+  no slice to resolve for them. The HLS `Processor.process_file` in
   [processor.py](./lambda/virtualizarr-processor/virtualizarr_processor/processor.py)
-  are a worked example: read the axis the store already holds, compare this
-  file's coordinate against it, and return the mode with the `to_icechunk`
-  keyword arguments that go with it.
+  is a worked example: read the time axis the store already holds, compare this
+  granule's time against it, and region-write or append accordingly.
 
 - **commit_processed_files** This method commits all the changes made during the
   session in a single commit.

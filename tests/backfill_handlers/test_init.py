@@ -1,18 +1,23 @@
-import pathlib
 from unittest.mock import MagicMock
 
-import pytest
-from backfill_handlers import init
+import numpy as np
+import xarray as xr
+from fakes import Backfill
 
 
-def test_init_creates_backfill_branch(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-    lambda_context: MagicMock,
+def test_init_declares_the_cube_from_the_inventory(
+    hls_backfill: Backfill, lambda_context: MagicMock
 ) -> None:
-    monkeypatch.delenv("ICECHUNK_BUCKET", raising=False)
-    monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
+    from backfill_handlers import init
 
-    result = init.handler({}, lambda_context)
+    result = init.handler({"inventory_uri": hls_backfill.inventory_uri}, lambda_context)
 
-    assert isinstance(result["base_snapshot"], str) and result["base_snapshot"]
+    repo = hls_backfill.processor().open_backfill_repo()
+    assert result["base_snapshot"] == repo.lookup_branch("backfill")
+    ds = xr.open_zarr(
+        repo.readonly_session("backfill").store,
+        group="T13SDA/B04/multiscales/0",
+        consolidated=False,
+    )
+    assert ds.sizes["time"] == len(hls_backfill.granule_ids)
+    assert (np.diff(ds.time.values) > np.timedelta64(0)).all()

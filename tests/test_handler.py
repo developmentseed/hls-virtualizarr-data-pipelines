@@ -4,18 +4,29 @@ The contract these pin down is the ordering. A per-file failure is reported to
 SQS only *after* the commit has succeeded, so the records left off the failure
 list really are stored. A commit failure is raised instead, because then nothing
 is stored and the whole batch has to come back.
+
+These run the real HLS processor against the test fakes: a local repo holding a
+two-granule T13SDA cube, and forward granules addressed by asset key.
 """
 
 import json
+import pickle
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
+import xarray as xr
+from fakes import FakeAssets, write_all_bands
+from virtualizarr_processor import processor as processor_module
+from virtualizarr_processor.backfill import create_fork, merge_and_commit, promote
+from virtualizarr_processor.processor import Processor
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lambda"))
 
-from process_messages.handler import handler
+import process_messages.handler as handler_module  # noqa: E402
+from process_messages.handler import handler  # noqa: E402
 
 
 def make_sqs_event(keys: list[str], bucket: str = "test-bucket") -> dict:
@@ -52,120 +63,190 @@ def make_sqs_event(keys: list[str], bucket: str = "test-bucket") -> dict:
     return {"Records": records}
 
 
-def make_processor(MockProcessor: MagicMock) -> MagicMock:
-    processor = MockProcessor.return_value
-    processor.initialize_repo.return_value = MagicMock()
-    session = MagicMock()
-    session.has_uncommitted_changes = True
-    processor.initialize_session.return_value = session
-    processor.process_file.return_value = True
-    processor.commit_processed_files.return_value = "snapshot-123"
-    return processor
+BACKFILLED = [
+    "HLS.L30.T13SDA.2025152T170000.v2.0",
+    "HLS.L30.T13SDA.2025168T170000.v2.0",
+]
+NEW_A = "HLS.L30.T13SDA.2025184T170000.v2.0"
+NEW_B = "HLS.L30.T13SDA.2025200T170000.v2.0"
+OLD = "HLS.L30.T13SDA.2013152T170000.v2.0"
 
 
-@patch("process_messages.handler.Processor")
+def key(granule_id: str, band: str = "B04") -> str:
+    return f"HLSL30.020/{granule_id}/{granule_id}.{band}.tif"
+
+
+def main_times(factory: Callable[[], Processor]) -> list[str]:
+    store = factory().initialize_repo().readonly_session("main").store
+    ds = xr.open_zarr(store, group="T13SDA/B04/multiscales/0", consolidated=False)
+    return [str(t)[:10] for t in ds.time.values]
+
+
+def main_commits(factory: Callable[[], Processor]) -> int:
+    return len(list(factory().initialize_repo().ancestry(branch="main")))
+
+
+@pytest.fixture
+def forward(
+    fake_assets: FakeAssets,
+    fake_processor_factory: Callable[[], Processor],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[], Processor]:
+    """A backfilled cube on main, the handler's Processor wired to it, and assets
+    for the forward granules."""
+    for value, gid in enumerate([*BACKFILLED, NEW_A, NEW_B, OLD], 1):
+        write_all_bands(fake_assets, gid, value)
+    processor = fake_processor_factory()
+    repo = processor.open_backfill_repo()
+    processor.initialize_backfill_store(repo, BACKFILLED)
+    child = pickle.loads(create_fork(repo)).fork()
+    for gid in BACKFILLED:
+        assert processor.process_backfill_file(gid, child)
+    merge_and_commit(repo, [pickle.dumps(child)], message="backfill")
+    promote(repo)
+    monkeypatch.setattr(handler_module, "Processor", fake_processor_factory)
+    return fake_processor_factory
+
+
 def test_a_batch_that_writes_and_commits_reports_no_failures(
-    MockProcessor: MagicMock,
+    forward: Callable[[], Processor],
 ) -> None:
-    processor = make_processor(MockProcessor)
+    before = main_commits(forward)
 
-    response = handler(make_sqs_event(["2024-01-02", "2024-01-03"]), MagicMock())
+    response = handler(make_sqs_event([key(NEW_A), key(NEW_B)]), MagicMock())
 
     assert response == {"batchItemFailures": []}
-    assert [c.kwargs["file_key"] for c in processor.process_file.call_args_list] == [
-        "2024-01-02",
-        "2024-01-03",
-    ]
     # one session shared across the batch, one commit at the end
-    processor.initialize_session.assert_called_once()
-    processor.commit_processed_files.assert_called_once()
+    assert main_commits(forward) == before + 1
+    assert main_times(forward) == [
+        "2025-06-01",
+        "2025-06-17",
+        "2025-07-03",
+        "2025-07-19",
+    ]
 
 
-@patch("process_messages.handler.Processor")
-def test_one_failed_file_returns_only_its_own_message(MockProcessor: MagicMock) -> None:
+def test_an_out_of_order_granule_is_sorted_before_commit(
+    forward: Callable[[], Processor],
+) -> None:
+    response = handler(make_sqs_event([key(OLD)]), MagicMock())
+
+    assert response == {"batchItemFailures": []}
+    assert main_times(forward) == ["2013-06-01", "2025-06-01", "2025-06-17"]
+
+
+def test_one_failed_file_returns_only_its_own_message(
+    forward: Callable[[], Processor], fake_assets: FakeAssets
+) -> None:
     """The rest of the batch still commits, so those files really are stored and
     only the failed message needs redelivering."""
-    processor = make_processor(MockProcessor)
-    processor.process_file.side_effect = [True, False, True]
+    fake_assets.missing(NEW_B, "Fmask")
 
-    response = handler(
-        make_sqs_event(["2024-01-02", "unwritable-key", "2024-01-04"]), MagicMock()
-    )
+    response = handler(make_sqs_event([key(NEW_A), key(NEW_B), key(OLD)]), MagicMock())
 
     assert response == {"batchItemFailures": [{"itemIdentifier": "msg-001"}]}
-    processor.commit_processed_files.assert_called_once()
+    assert main_times(forward) == [
+        "2013-06-01",
+        "2025-06-01",
+        "2025-06-17",
+        "2025-07-03",
+    ]
 
 
-@patch("process_messages.handler.Processor")
 def test_a_file_that_raises_is_held_rather_than_aborting_the_batch(
-    MockProcessor: MagicMock,
+    forward: Callable[[], Processor], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    processor = make_processor(MockProcessor)
-    processor.process_file.side_effect = [Exception("boom"), True]
+    def factory() -> Processor:
+        p = forward()
+        real = p.process_file
 
-    response = handler(make_sqs_event(["bad-key", "2024-01-03"]), MagicMock())
+        def process_file(file_key: str, session: object) -> bool:
+            if file_key == "explode":
+                raise Exception("boom")
+            return real(file_key, session)  # type: ignore[arg-type]
+
+        p.process_file = process_file  # type: ignore[method-assign]
+        return p
+
+    monkeypatch.setattr(handler_module, "Processor", factory)
+
+    response = handler(make_sqs_event(["explode", key(NEW_A)]), MagicMock())
 
     assert response == {"batchItemFailures": [{"itemIdentifier": "msg-000"}]}
-    processor.commit_processed_files.assert_called_once()
+    assert len(main_times(forward)) == 3
 
 
-@patch("process_messages.handler.Processor")
-def test_a_failed_commit_fails_the_whole_invocation(MockProcessor: MagicMock) -> None:
+def test_a_failed_commit_fails_the_whole_invocation(
+    forward: Callable[[], Processor], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Files written into a session that never commits have not been stored.
     Reporting failures here would delete their messages; raising redelivers
-    every one of them."""
-    processor = make_processor(MockProcessor)
-    processor.commit_processed_files.side_effect = Exception("conflict")
+    every one of them. A write that fails part-way makes the commit refuse."""
+    real = processor_module.write_granule
 
-    with pytest.raises(Exception, match="conflict"):
-        handler(make_sqs_event(["2024-01-02", "2024-01-03"]), MagicMock())
+    def half_written(store, tile, granule, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if granule.id == NEW_B:
+            raise OSError("half written")
+        return real(store, tile, granule, *args, **kwargs)
+
+    monkeypatch.setattr(processor_module, "write_granule", half_written)
+    before = main_commits(forward)
+
+    with pytest.raises(RuntimeError, match="refusing to commit"):
+        handler(make_sqs_event([key(NEW_A), key(NEW_B)]), MagicMock())
+
+    assert main_commits(forward) == before
+    assert len(main_times(forward)) == 2
 
 
-@patch("process_messages.handler.Processor")
 def test_a_batch_where_nothing_could_be_written_fails_the_invocation(
-    MockProcessor: MagicMock,
+    forward: Callable[[], Processor],
 ) -> None:
     """There is no commit to hang a partial failure report off, and Icechunk
     refuses an empty commit, so the batch goes back whole."""
-    processor = make_processor(MockProcessor)
-    processor.process_file.return_value = False
-    processor.initialize_session.return_value.has_uncommitted_changes = False
+    other_tile = "HLS.L30.T13SDB.2025184T170000.v2.0"
 
     with pytest.raises(RuntimeError, match="no file in this batch could be written"):
-        handler(make_sqs_event(["bad-a", "bad-b"]), MagicMock())
-
-    processor.commit_processed_files.assert_not_called()
+        handler(make_sqs_event([key(other_tile), "not-a-granule"]), MagicMock())
 
 
-@patch("process_messages.handler.Processor")
+def test_a_store_that_was_never_backfilled_rejects_the_batch(
+    fake_assets: FakeAssets,
+    fake_processor_factory: Callable[[], Processor],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_all_bands(fake_assets, NEW_A, 1)
+    monkeypatch.setattr(handler_module, "Processor", fake_processor_factory)
+
+    with pytest.raises(RuntimeError, match="no file in this batch could be written"):
+        handler(make_sqs_event([key(NEW_A)]), MagicMock())
+
+
 def test_a_store_that_cannot_be_opened_is_logged_before_it_raises(
-    MockProcessor: MagicMock, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A misconfigured deployment fails here -- no bucket, no permission on it --
     and it happens before any per-file logging. Unguarded it leaves nothing but
     the runtime's plain-text traceback, which is invisible to a level filter."""
-    MockProcessor.return_value.initialize_repo.side_effect = KeyError(
-        "ICECHUNK_LOCAL_PATH"
-    )
+    monkeypatch.delenv("ICECHUNK_BUCKET", raising=False)
+    monkeypatch.delenv("ICECHUNK_LOCAL_PATH", raising=False)
+    monkeypatch.setattr(handler_module, "Processor", lambda: Processor(tile="T13SDA"))
 
     with caplog.at_level("ERROR"):
-        with pytest.raises(KeyError):
-            handler(make_sqs_event(["2024-01-02"]), MagicMock())
+        with pytest.raises(ValueError, match="ICECHUNK_BUCKET"):
+            handler(make_sqs_event([key(NEW_A)]), MagicMock())
 
     assert "Could not open the store" in caplog.text
 
 
-@patch("process_messages.handler.Processor")
-def test_an_sns_wrapped_message_is_unwrapped(MockProcessor: MagicMock) -> None:
-    processor = make_processor(MockProcessor)
+def test_an_sns_wrapped_message_is_unwrapped(forward: Callable[[], Processor]) -> None:
     inner = {
         "Records": [
-            {"s3": {"bucket": {"name": "test-bucket"}, "object": {"key": "wrapped"}}}
+            {"s3": {"bucket": {"name": "test-bucket"}, "object": {"key": key(NEW_A)}}}
         ]
     }
     event = make_sqs_event(["placeholder"])
     event["Records"][0]["body"] = json.dumps({"Message": json.dumps(inner)})
 
-    handler(event, MagicMock())
-
-    assert processor.process_file.call_args.kwargs["file_key"] == "wrapped"
+    assert handler(event, MagicMock()) == {"batchItemFailures": []}
+    assert main_times(forward)[-1] == "2025-07-03"

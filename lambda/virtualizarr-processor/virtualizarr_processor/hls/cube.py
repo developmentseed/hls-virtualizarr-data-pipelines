@@ -197,33 +197,21 @@ def _check_time_axis(
         )
 
 
-def write_granule(
+def check_granule(
     store: Any,
     tile: str,
     granule: Granule,
     pyramids: dict[str, Pyramid],
     *,
     mode: Literal["region", "append"],
-    reference_url_for: Callable[[str], str] = reference_url,
 ) -> None:
-    """Write one granule into every declared (band, level) of ``tile``.
+    """Check one granule against the declared cube without writing anything.
 
-    Every declared array is checked against the granule first -- the granule
-    must supply exactly the declared bands and levels, each matching per
-    ``check_level`` -- so a mismatch raises ``GridMismatch`` with nothing
-    written. ``mode="region"`` fills an already-declared time step;
-    ``"append"`` extends the time axis. ``reference_url_for`` maps an asset
-    key to the URL recorded in the manifest.
-
-    The time axis is checked first too: every level group must have the same
-    time length, and the granule's time must be on the axis exactly once for
-    ``"region"`` and absent for ``"append"`` -- otherwise ``ValueError``, with
-    nothing written.
-
-    Partial failure: the pre-flight cannot rule out an I/O error part-way
-    through the write loop, which (in append mode especially) can leave the
-    uncommitted session or fork with groups whose time axes have diverged.
-    Callers must discard the session/fork on any exception, never commit it.
+    The time axis first: every level group must have the same time length, and
+    the granule's time must be on the axis exactly once for ``"region"`` and
+    absent for ``"append"`` -- otherwise ``ValueError``. Then the granule must
+    supply exactly the declared bands and levels, each matching per
+    ``check_level`` -- otherwise ``GridMismatch``.
     """
     _check_time_axis(store, tile, granule, mode)
     declared = _declared_levels(store, tile)
@@ -245,10 +233,34 @@ def write_granule(
             except GridMismatch as err:
                 raise GridMismatch(f"{band} level {level}: {err}") from err
 
+
+def write_granule(
+    store: Any,
+    tile: str,
+    granule: Granule,
+    pyramids: dict[str, Pyramid],
+    *,
+    mode: Literal["region", "append"],
+    reference_url_for: Callable[[str], str] = reference_url,
+) -> None:
+    """Write one granule into every declared (band, level) of ``tile``.
+
+    ``check_granule`` runs first, so a time-axis problem (``ValueError``) or a
+    grid mismatch (``GridMismatch``) raises with nothing written.
+    ``mode="region"`` fills an already-declared time step; ``"append"`` extends
+    the time axis. ``reference_url_for`` maps an asset key to the URL recorded
+    in the manifest.
+
+    Partial failure: the pre-flight cannot rule out an I/O error part-way
+    through the write loop, which (in append mode especially) can leave the
+    uncommitted session or fork with groups whose time axes have diverged.
+    Callers must discard the session/fork on any exception, never commit it.
+    """
+    check_granule(store, tile, granule, pyramids, mode=mode)
     kwargs: dict[str, Any] = (
         {"region": "auto"} if mode == "region" else {"append_dim": "time"}
     )
-    for band in sorted(declared):
+    for band in sorted(pyramids):
         levels = granule_levels(
             granule, band, pyramids[band], reference_url_for=reference_url_for
         )

@@ -1,19 +1,15 @@
-import pathlib
 from unittest.mock import MagicMock
 
-import pytest
 from backfill_handlers import fork, fork_store, init, worker
+from fakes import Backfill
 
 
 def test_worker_writes_child_fork(
     s3_bucket: str,
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
+    hls_backfill: Backfill,
     lambda_context: MagicMock,
 ) -> None:
-    monkeypatch.delenv("ICECHUNK_BUCKET", raising=False)
-    monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(tmp_path / "repo"))
-    init.handler({}, lambda_context)
+    init.handler({"inventory_uri": hls_backfill.inventory_uri}, lambda_context)
     fork_result = fork.handler(
         {
             "partition_id": "0",
@@ -26,7 +22,7 @@ def test_worker_writes_child_fork(
     event = {
         "fork_in_uri": fork_result["fork_in_uri"],
         "forks_out_prefix": fork_result["forks_out_prefix"],
-        "file_keys": ["0", "1", "2"],
+        "file_keys": hls_backfill.granule_ids[:3],
     }
     result = worker.handler(event, lambda_context)
 

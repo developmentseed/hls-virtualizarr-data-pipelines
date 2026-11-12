@@ -1,245 +1,119 @@
+"""The HLS tile-cube processor: one MGRS tile, one HLS product, one Icechunk repo.
+
+Backfill declares the whole cube up front from an inventory of granule IDs and
+region-writes each granule into its declared time step. Forward processing
+region-writes a granule whose time is already on the axis (a redelivery, or a
+slot a backfill skipped) and appends any other, then sorts the time axis back
+into order before committing. See
+docs/superpowers/specs/2026-11-11-hls-l30-mgrs-datacube-design.md.
+"""
+
+from __future__ import annotations
+
 import logging
 import os
-import tempfile
-from datetime import datetime
-from itertools import islice
-from typing import Any, NamedTuple, cast
+import time
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from typing import Any, Literal, Protocol, cast
 
 import icechunk
 import numpy as np
-import obstore
-import xarray as xr
-import zarr
 from icechunk import ForkSession, Repository, Session
-from virtualizarr.manifests import ChunkManifest, ManifestArray
-from zarr.codecs import BytesCodec
-from zarr.core.dtype import parse_data_type
-from zarr.core.metadata import ArrayV3Metadata
+
+from virtualizarr_processor.hls import assets
+from virtualizarr_processor.hls.credentials import (
+    ACCESS_MODES,
+    bootstrap_earthdata_env,
+    container_credentials,
+    earthdata_token,
+    object_store_registry,
+    virtual_chunk_container,
+)
+from virtualizarr_processor.hls.cube import (
+    check_granule,
+    declare_cube,
+    open_granule,
+    store_times,
+    write_granule,
+)
+from virtualizarr_processor.hls.granule import BANDS, Granule, granule_from_key
+from virtualizarr_processor.hls.grid import TileGrid, tile_grid
+from virtualizarr_processor.hls.pyramid import Pyramid, PyramidOpener, open_pyramid
+from virtualizarr_processor.hls.sort import sort_time
 
 logger = logging.getLogger(__name__)
 
-CHUNK_DIR = os.path.realpath(tempfile.gettempdir())
-CHUNK_DIRECTORY_URL_PREFIX = f"file://{CHUNK_DIR}/"
+#: icechunk's ``CachingConfig.num_chunk_refs`` raised above its default, after
+#: icechest-hls's measurement (a 14x commit slowdown with the default cache).
+#: A T13SDA L30 granule carries ~8,000 chunk refs (15 bands x all levels), and
+#: the whole archive is a few thousand granules, so this holds the full cube.
+#: Override with ``ICECHUNK_NUM_CHUNK_REFS``.
+DEFAULT_NUM_CHUNK_REFS = 65_000_000
 
-# Forward synthetic dataset: one time step per file, each a (Y, X) chunk.
-FORWARD_Y, FORWARD_X = 2, 3
+#: Attempts and initial backoff (seconds, doubled per retry) for opening one
+#: band's COG headers. A missing object (``FileNotFoundError``) is not retried.
+OPEN_ATTEMPTS = 3
+RETRY_DELAY = 1.0
 
-# Backfill synthetic dataset: N time steps, each a (Y, X) int32 chunk.
-BACKFILL_N, BACKFILL_Y, BACKFILL_X = 6, 2, 3
-BACKFILL_DTYPE = np.dtype("int32")
+#: Attribute set on a session whose granule write failed part-way. Sessions are
+#: unhashable, so the mark lives on the session itself.
+_FAILED_WRITES = "_hls_failed_writes"
 
-# The dimension forward processing extends. Every reference here goes through
-# this name, so an implementation with a differently named axis only changes it.
-APPEND_DIMENSION = "time"
+Stage = Literal["parse", "open", "check", "write"]
 
 
-class WritePlan(NamedTuple):
-    """How one file gets written.
+@dataclass
+class SkipRecord:
+    """A granule a backfill worker skipped, and why."""
 
-    `plan.dataset.vz.to_icechunk(store, **plan.kwargs)`.
+    granule_id: str
+    stage: Stage
+    error: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
+
+
+class Locator(Protocol):
+    """Maps an asset key to the URL it is read from and the URL it is recorded as."""
+
+    def read_url(self, key: str) -> str: ...
+
+    def reference_url(self, key: str) -> str: ...
+
+
+@dataclass(frozen=True)
+class LpDaacLocator:
+    """Reads LP DAAC over ``s3`` or ``https``; records endpoint-free ``vcc://`` refs."""
+
+    access: str = "s3"
+
+    def read_url(self, key: str) -> str:
+        return assets.read_url(key, cast(Literal["s3", "https"], self.access))
+
+    def reference_url(self, key: str) -> str:
+        return assets.reference_url(key)
+
+
+class _Rejected(Exception):
+    """A granule this processor's cube does not take."""
+
+
+def default_repo_opener(access: str) -> Callable[[], Repository]:
+    """Open (or create) the cube repo from the environment.
+
+    ``ICECHUNK_BUCKET`` (with optional ``ICECHUNK_PREFIX``/``ICECHUNK_REGION``)
+    selects S3 storage, else ``ICECHUNK_LOCAL_PATH`` a filesystem repo. The
+    ``lpdaac`` virtual chunk container resolves ``vcc://lpdaac/...`` refs.
     """
 
-    mode: str  # "create" | "region" | "append"
-    dataset: xr.Dataset
-    kwargs: dict[str, Any]
-
-
-def store_append_dimension(
-    store: Any, dimension: str = APPEND_DIMENSION
-) -> np.ndarray | None:
-    """The coordinate values a store already holds along `dimension`, or None if
-    it holds no data yet.
-
-    Re-read for every file rather than cached: a write earlier in the same batch
-    moves the axis that the next file has to see. A session reads its own
-    uncommitted writes, so this stays correct mid-batch.
-    """
-    try:
-        dataset = xr.open_zarr(store, consolidated=False, zarr_format=3)
-    except Exception:
-        # No group at all yet: a forward-only deployment before its first file.
-        return None
-    if dimension not in dataset.coords:
-        return None
-    return cast(np.ndarray, dataset[dimension].values)
-
-
-def write_plan(
-    dataset: xr.Dataset,
-    existing: np.ndarray | None,
-    dimension: str = APPEND_DIMENSION,
-) -> WritePlan:
-    """Choose between creating, region-writing and appending one file.
-
-    The deciding question is whether the store's axis already carries this
-    file's coordinate:
-
-    * **region** -- it does, so the row exists and must be written in place.
-      An append would add a second row with the same coordinate value, leaving
-      the axis non-monotonic and the file stored twice. This is the normal case
-      after a backfill: the store is declared at its full extent up front, so
-      every coordinate inside that extent already has a (possibly empty) row
-      waiting, and it is also how a re-delivered notification lands harmlessly.
-    * **append** -- it does not, which is the forward case: a coordinate past
-      the declared axis extends it by one row.
-    * **create** -- there is no array at all yet, the first file of a
-      forward-only deployment, where the write has to create the store.
-
-    An implementation whose dataset carries variables without the append
-    dimension (a static grid coordinate, say) has to drop them from the region
-    dataset: `region="auto"` resolves a slice per dimension and has none to
-    resolve for those. `plan.dataset` is the hook for that -- return the
-    reduced dataset for the region mode and the full one for an append, where
-    having no append dimension means the already-written copies are left alone.
-    """
-    if existing is None:
-        return WritePlan("create", dataset, {})
-    coordinate = dataset[dimension].values[0]
-    if bool((existing == coordinate).any()):
-        return WritePlan("region", dataset, {"region": "auto"})
-    return WritePlan("append", dataset, {"append_dim": dimension})
-
-
-def synthetic_vds(date: str) -> xr.Dataset:
-    """One file as a virtual dataset: a single (Y, X) chunk on a leading
-    `time` dimension.
-
-    The data variable carries the append dimension rather than only the
-    coordinate carrying it, so a file whose coordinate is already on the axis
-    has a row to be written into by `region="auto"`. This matches the shape
-    `initialize_backfill_store` declares.
-    """
-    filepath = f"{CHUNK_DIR}/data_chunk"
-    store = obstore.store.LocalStore()
-    arr = np.repeat([[1, 2]], 3, axis=1).reshape(1, FORWARD_Y, FORWARD_X)
-    shape = arr.shape
-    dtype = arr.dtype
-    buf = arr.tobytes()
-    obstore.put(
-        store,
-        filepath,
-        buf,
-    )
-    manifest = ChunkManifest(
-        {"0.0.0": {"path": filepath, "offset": 0, "length": len(buf)}}
-    )
-    zdtype = parse_data_type(dtype, zarr_format=3)
-    metadata = ArrayV3Metadata(
-        shape=shape,
-        data_type=zdtype,
-        chunk_grid={
-            "name": "regular",
-            "configuration": {"chunk_shape": shape},
-        },
-        chunk_key_encoding={"name": "default"},
-        fill_value=zdtype.default_scalar(),
-        codecs=[BytesCodec()],
-        attributes={},
-        dimension_names=(APPEND_DIMENSION, "y", "x"),
-        storage_transformers=None,
-    )
-    ma = ManifestArray(
-        chunkmanifest=manifest,
-        metadata=metadata,
-    )
-    foo = xr.Variable(
-        data=ma, dims=[APPEND_DIMENSION, "y", "x"], encoding={"scale_factor": 2}
-    )
-    vds = xr.Dataset(
-        {"foo": foo},
-        coords={
-            APPEND_DIMENSION: (
-                APPEND_DIMENSION,
-                [np.datetime64(date)],
-            )  # Single time point
-        },
-    )
-    return vds
-
-
-class Processor:
-    def initialize_repo(self) -> Repository:
-        chunk_store = icechunk.local_filesystem_store(CHUNK_DIR)
-        storage = icechunk.in_memory_storage()
-        config = icechunk.RepositoryConfig.default()
-        config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(CHUNK_DIRECTORY_URL_PREFIX, chunk_store)
-        )
-        repo = icechunk.Repository.open_or_create(
-            storage=storage,
-            config=config,
-            authorize_virtual_chunk_access={
-                CHUNK_DIRECTORY_URL_PREFIX: icechunk.credentials.LocalFileSystemAccess
-            },
-        )
-        # Get only up to 2 commits to check if the repository is new
-        history = list(islice(repo.ancestry(branch="main"), 2))
-        if len(history) == 1:
-            session = repo.writable_session("main")
-            vds = synthetic_vds("2024-01-01")
-            vds.vz.to_icechunk(session.store, validate_containers=False)
-            session.commit(message="Initialization")
-        return repo
-
-    def initialize_session(self, repo: Repository) -> Session:
-        session = repo.writable_session("main")
-        return session
-
-    def process_file(self, file_key: str, session: Session) -> bool:
-        """Write one file into `main`, creating, region-writing or appending.
-
-        Which of the three depends on the file: one whose coordinate is already
-        on the store's axis is written in place, one that is not extends the
-        axis by a row. `write_plan` holds the reasoning.
-        """
-        try:
-            vds = synthetic_vds(file_key)
-            plan = write_plan(vds, store_append_dimension(session.store))
-            logger.info("%s: %s write to main", file_key, plan.mode)
-            plan.dataset.vz.to_icechunk(
-                session.store, validate_containers=False, **plan.kwargs
-            )
-            return True
-        except Exception:
-            logger.exception("process_file failed for %s", file_key)
-            return False
-
-    def commit_processed_files(self, session: Session) -> str:
-        snapshot = session.commit(message=f"Update {session.snapshot_id}")
-        return str(snapshot)
-
-    def initialize_backfill_store(self, repo: Repository) -> str:
-        repo.create_branch("backfill", repo.lookup_branch("main"))
-        session = repo.writable_session("backfill")
-        root = zarr.open_group(session.store, mode="a")
-        root.create_array(
-            "foo",
-            shape=(BACKFILL_N, BACKFILL_Y, BACKFILL_X),
-            chunks=(1, BACKFILL_Y, BACKFILL_X),
-            dtype=BACKFILL_DTYPE,
-            serializer=BytesCodec(),
-            compressors=None,
-            filters=None,
-            dimension_names=("time", "y", "x"),
-        )
-        time_coord = root.create_array(
-            "time",
-            shape=(BACKFILL_N,),
-            chunks=(BACKFILL_N,),
-            dtype="int64",
-            dimension_names=("time",),
-        )
-        time_coord[:] = np.arange(BACKFILL_N)
-        return cast(str, session.commit("Initialize backfill shape"))
-
-    def open_backfill_repo(self) -> Repository:
-        # Reference impl storage config, read from the environment:
-        #   ICECHUNK_BUCKET  - if set, use S3 storage (Lambda); IAM creds via from_env
-        #   ICECHUNK_PREFIX  - S3 key prefix (optional)
-        #   ICECHUNK_REGION  - S3 region (optional)
-        #   ICECHUNK_LOCAL_PATH - filesystem repo path when no bucket (tests)
-        chunk_store = icechunk.local_filesystem_store(CHUNK_DIR)
+    def opener() -> Repository:
+        bootstrap_earthdata_env()
         bucket = os.environ.get("ICECHUNK_BUCKET")
+        local = os.environ.get("ICECHUNK_LOCAL_PATH")
         if bucket:
             storage = icechunk.s3_storage(
                 bucket=bucket,
@@ -247,77 +121,319 @@ class Processor:
                 region=os.environ.get("ICECHUNK_REGION"),
                 from_env=True,
             )
+        elif local:
+            storage = icechunk.local_filesystem_storage(local)
         else:
-            storage = icechunk.local_filesystem_storage(
-                os.environ["ICECHUNK_LOCAL_PATH"]
-            )
+            raise ValueError("set ICECHUNK_BUCKET or ICECHUNK_LOCAL_PATH")
         config = icechunk.RepositoryConfig.default()
-        config.set_virtual_chunk_container(
-            icechunk.VirtualChunkContainer(CHUNK_DIRECTORY_URL_PREFIX, chunk_store)
+        token = earthdata_token() if access == "https" else None
+        config.set_virtual_chunk_container(virtual_chunk_container(access, token=token))
+        config.caching = icechunk.CachingConfig(
+            num_chunk_refs=int(
+                os.environ.get("ICECHUNK_NUM_CHUNK_REFS", DEFAULT_NUM_CHUNK_REFS)
+            )
         )
         return icechunk.Repository.open_or_create(
             storage=storage,
             config=config,
-            authorize_virtual_chunk_access={
-                CHUNK_DIRECTORY_URL_PREFIX: icechunk.credentials.LocalFileSystemAccess
-            },
+            authorize_virtual_chunk_access=container_credentials(access),
         )
 
-    def _backfill_slice_vds(self, t: int) -> xr.Dataset:
-        """A one-time-step virtual dataset for backfill index t, carrying the
-        matching `time` coordinate so to_icechunk(region="auto") can place it."""
-        buf = np.full((1, BACKFILL_Y, BACKFILL_X), t, dtype=BACKFILL_DTYPE).tobytes()
-        # Synthetic reference only: each slice writes its own local source chunk.
-        # These accumulate under CHUNK_DIR; a real Processor references existing
-        # source files (e.g. in S3) and does not create per-slice temp files.
-        filepath = f"{CHUNK_DIR}/backfill_slice_{t}"
-        obstore.put(obstore.store.LocalStore(), filepath, buf)
-        manifest = ChunkManifest(
-            {"0.0.0": {"path": filepath, "offset": 0, "length": len(buf)}}
-        )
-        zdtype = parse_data_type(BACKFILL_DTYPE, zarr_format=3)
-        metadata = ArrayV3Metadata(
-            shape=(1, BACKFILL_Y, BACKFILL_X),
-            data_type=zdtype,
-            chunk_grid={
-                "name": "regular",
-                "configuration": {"chunk_shape": (1, BACKFILL_Y, BACKFILL_X)},
-            },
-            chunk_key_encoding={"name": "default"},
-            fill_value=zdtype.default_scalar(),
-            codecs=[BytesCodec()],
-            attributes={},
-            dimension_names=("time", "y", "x"),
-            storage_transformers=None,
-        )
-        ma = ManifestArray(chunkmanifest=manifest, metadata=metadata)
-        return xr.Dataset(
-            {"foo": xr.Variable(("time", "y", "x"), ma)},
-            coords={"time": ("time", [t])},
-        )
+    return opener
 
-    def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
-        try:
-            # Synthetic keys are the integer time index as a string ("0".."5").
-            # A real processor parses the source file for its own coordinate.
-            t = int(file_key)
-            self._backfill_slice_vds(t).vz.to_icechunk(
-                fork.store, region="auto", validate_containers=False
+
+class Processor:
+    """The ``VirtualizarrProcessor`` for one HLS tile cube.
+
+    ``None`` arguments default from the environment: ``MGRS_TILE`` (required),
+    ``HLS_PRODUCT`` (``"L30"``), ``LPDAAC_ACCESS`` (``"s3"``). ``grid``
+    defaults to the tile's embedded ``TILE_GRIDS`` entry. ``opener``,
+    ``locator``, ``repo_opener`` and ``registry`` are seams for tests; the
+    registry (how COG headers are read) is only built for the real opener.
+
+    ``skipped`` accumulates the backfill granules this instance skipped.
+    """
+
+    def __init__(
+        self,
+        *,
+        tile: str | None = None,
+        product: str | None = None,
+        access: str | None = None,
+        grid: TileGrid | None = None,
+        opener: PyramidOpener = open_pyramid,
+        locator: Locator | None = None,
+        repo_opener: Callable[[], Repository] | None = None,
+        registry: Callable[[], Any] | None = None,
+    ) -> None:
+        tile = tile if tile is not None else os.environ.get("MGRS_TILE")
+        if not tile:
+            raise ValueError("no MGRS tile: pass tile= or set MGRS_TILE")
+        product = product if product is not None else os.environ.get("HLS_PRODUCT")
+        product = product or "L30"
+        if product not in BANDS:
+            raise ValueError(f"unsupported HLS product {product!r}")
+        access = access if access is not None else os.environ.get("LPDAAC_ACCESS")
+        access = access or "s3"
+        if access not in ACCESS_MODES:
+            raise ValueError(f"unknown access mode {access!r}; expected {ACCESS_MODES}")
+        self.tile, self.product, self.access = tile, product, access
+        self.grid = grid if grid is not None else tile_grid(self.tile)
+        if self.grid.mgrs_id != self.tile:
+            raise ValueError(f"grid is for {self.grid.mgrs_id}, not {self.tile}")
+        self.opener = opener
+        self.locator = locator if locator is not None else LpDaacLocator(self.access)
+        self.repo_opener = (
+            repo_opener if repo_opener is not None else default_repo_opener(self.access)
+        )
+        if registry is None:
+            registry = self._default_registry if opener is open_pyramid else _none
+        self._registry_factory = registry
+        self._registry: Any = None
+        self._registry_built = False
+        self.skipped: list[SkipRecord] = []
+        self.open_attempts = OPEN_ATTEMPTS
+        self.retry_delay = RETRY_DELAY
+
+    # --- shared -------------------------------------------------------------
+
+    def _default_registry(self) -> Any:
+        bootstrap_earthdata_env()
+        return object_store_registry(self.access)
+
+    def _registry_now(self) -> Any:
+        if not self._registry_built:
+            self._registry = self._registry_factory()
+            self._registry_built = True
+        return self._registry
+
+    @property
+    def bands(self) -> tuple[str, ...]:
+        return BANDS[self.product]
+
+    def _granule(self, key: str) -> Granule:
+        """Parse ``key`` (``ValueError``); ``_Rejected`` if it is not this cube's."""
+        return self._accept(granule_from_key(key))
+
+    def _accept(self, granule: Granule) -> Granule:
+        if granule.tile != self.tile or granule.product != self.product:
+            raise _Rejected(
+                f"{granule.id} is {granule.product}/{granule.tile}; "
+                f"this cube is {self.product}/{self.tile}"
             )
-            return True
-        except Exception:
-            # Catch parse/region errors and I/O failures from to_icechunk, but log
-            # the real cause first — otherwise the worker only reports a generic
-            # "process_backfill_file failed" and the underlying error is lost.
-            # A real (network-reading) processor should also retry the granule read
-            # here with backoff, since transient object-store / auth throttling under
-            # a large backfill's concurrency is otherwise fatal. logger.exception
-            # includes the traceback.
-            logger.exception("process_backfill_file failed for %s", file_key)
-            return False
+        return granule
+
+    def _open_one(self, url: str, registry: Any) -> Pyramid:
+        delay = self.retry_delay
+        for attempt in range(1, self.open_attempts + 1):
+            try:
+                return self.opener(url, registry)
+            except FileNotFoundError:
+                raise
+            except Exception as err:
+                if attempt == self.open_attempts:
+                    raise
+                logger.warning(
+                    "open %s failed (attempt %d/%d): %s; retrying",
+                    url,
+                    attempt,
+                    self.open_attempts,
+                    err,
+                )
+                time.sleep(delay)
+                delay *= 2
+        raise AssertionError("unreachable")
+
+    def _open(self, granule: Granule, registry: Any) -> dict[str, Pyramid]:
+        """Every band's pyramid, each open retried; raises before any write."""
+        return open_granule(
+            granule, self.bands, self._open_one, registry, self.locator.read_url
+        )
+
+    # --- repositories -------------------------------------------------------
+
+    def initialize_repo(self) -> Repository:
+        """Open (or create) the cube repo. Writes no data: the cube must be
+        backfilled before forward processing will write to it."""
+        return self.repo_opener()
+
+    def open_backfill_repo(self) -> Repository:
+        return self.repo_opener()
 
     def garbage_collect(self, expiry_time: datetime) -> icechunk.GCSummary:
-        repo = self.initialize_repo()
+        repo = self.repo_opener()
         repo.expire_snapshots(older_than=expiry_time)
-        gcs = repo.garbage_collect(delete_object_older_than=expiry_time)
-        return gcs
+        return repo.garbage_collect(delete_object_older_than=expiry_time)
+
+    # --- backfill -----------------------------------------------------------
+
+    def initialize_backfill_store(
+        self, repo: Repository, granule_ids: list[str]
+    ) -> str:
+        """Declare the full cube on a new ``backfill`` branch and commit.
+
+        Every ID must parse and belong to this tile and product, with no two
+        sharing a time (``ValueError`` otherwise, before any branch is made).
+        The newest granule is opened as the reference for every array's
+        metadata; the time axis is every granule's time, sorted.
+        """
+        if not granule_ids:
+            raise ValueError("empty inventory")
+        granules = []
+        for gid in granule_ids:
+            try:
+                granules.append(self._granule(gid))
+            except _Rejected as err:
+                raise ValueError(str(err)) from None
+        counts = Counter(g.time for g in granules)
+        dupes = sorted(t.isoformat() for t, n in counts.items() if n > 1)
+        if dupes:
+            raise ValueError(f"duplicate granule times in inventory: {dupes}")
+        times = sorted(counts)
+        newest = max(granules, key=lambda g: g.time)
+        reference = self._open(newest, self._registry_now())
+
+        repo.create_branch("backfill", repo.lookup_branch("main"))
+        session = repo.writable_session("backfill")
+        declare_cube(session.store, self.grid, times, reference)
+        snapshot = cast(
+            str,
+            session.commit(
+                f"Declare {self.product} {self.tile} cube: {len(times)} time steps"
+            ),
+        )
+        logger.info(
+            "declared %s cube with %d time steps (reference %s)",
+            self.tile,
+            len(times),
+            newest.id,
+        )
+        return snapshot
+
+    def _skip(self, granule_id: str, stage: Stage, err: BaseException) -> bool:
+        record = SkipRecord(granule_id, stage, str(err))
+        self.skipped.append(record)
+        logger.error("skipped %s at %s: %s", granule_id, stage, err)
+        return False
+
+    def process_backfill_file(self, file_key: str, fork: ForkSession) -> bool:
+        """Region-write one granule into its declared step of ``fork``.
+
+        Any per-granule failure appends a ``SkipRecord`` to ``skipped`` and
+        returns ``False``. For the parse, open and check stages nothing has
+        been written for the granule (every band is opened and checked before
+        the first write). A ``"write"`` skip may have left the fork partly
+        written: the worker must then discard the whole fork, not save it.
+        """
+        try:
+            granule = granule_from_key(file_key)
+        except ValueError as err:
+            return self._skip(file_key, "parse", err)
+        try:
+            self._accept(granule)
+        except _Rejected as err:
+            return self._skip(granule.id, "check", err)
+        # outside the per-granule handling: a registry (credentials) failure is
+        # not about this granule, so it fails the worker rather than skipping
+        registry = self._registry_now()
+        try:
+            pyramids = self._open(granule, registry)
+        except Exception as err:
+            return self._skip(granule.id, "open", err)
+        try:
+            check_granule(fork.store, self.tile, granule, pyramids, mode="region")
+        except Exception as err:
+            return self._skip(granule.id, "check", err)
+        try:
+            write_granule(
+                fork.store,
+                self.tile,
+                granule,
+                pyramids,
+                mode="region",
+                reference_url_for=self.locator.reference_url,
+            )
+        except Exception as err:
+            logger.exception("write failed part-way for %s", granule.id)
+            return self._skip(granule.id, "write", err)
+        return True
+
+    # --- forward ------------------------------------------------------------
+
+    def initialize_session(self, repo: Repository) -> Session:
+        return repo.writable_session("main")
+
+    def process_file(self, file_key: str, session: Session) -> bool:
+        """Write one granule into ``main``: region if its time is on the axis,
+        else append. Never raises.
+
+        Returns ``False`` for a key that is not this cube's granule, a store
+        that was never backfilled, or a granule that cannot be opened or fails
+        the grid check -- each before anything is written. A write that fails
+        part-way also returns ``False`` and marks ``session`` so that
+        ``commit_processed_files`` refuses it.
+        """
+        try:
+            granule = self._granule(file_key)
+        except (ValueError, _Rejected) as err:
+            logger.error("rejected %s: %s", file_key, err)
+            return False
+        try:
+            times = store_times(session.store, self.tile)
+        except Exception:
+            logger.exception("could not read the %s time axis", self.tile)
+            return False
+        if times is None:
+            logger.error(
+                "store not backfilled: %s has no %s cube; cannot write %s",
+                self.product,
+                self.tile,
+                granule.id,
+            )
+            return False
+        when = np.datetime64(granule.time.astimezone(UTC).replace(tzinfo=None), "ns")
+        mode: Literal["region", "append"] = (
+            "region" if bool(np.any(times == when)) else "append"
+        )
+        try:
+            pyramids = self._open(granule, self._registry_now())
+            check_granule(session.store, self.tile, granule, pyramids, mode=mode)
+        except Exception:
+            logger.exception("could not %s %s", mode, granule.id)
+            return False
+        try:
+            write_granule(
+                session.store,
+                self.tile,
+                granule,
+                pyramids,
+                mode=mode,
+                reference_url_for=self.locator.reference_url,
+            )
+        except Exception as err:
+            logger.exception("%s write failed part-way for %s", mode, granule.id)
+            failed = getattr(session, _FAILED_WRITES, [])
+            setattr(session, _FAILED_WRITES, [*failed, f"{granule.id}: {err}"])
+            return False
+        logger.info("%s write of %s", mode, granule.id)
+        return True
+
+    def commit_processed_files(self, session: Session) -> str:
+        """Sort the time axis into order across every level group, then commit.
+
+        Raises, committing nothing, if a write in this session failed part-way:
+        the session may hold diverged groups and has to be discarded.
+        """
+        failed = getattr(session, _FAILED_WRITES, None)
+        if failed:
+            raise RuntimeError(
+                f"refusing to commit: writes failed part-way ({failed}); "
+                "discard the session"
+            )
+        moved = sort_time(session, self.tile)
+        logger.info("sorted %s time axis: %d rows moved", self.tile, moved)
+        return cast(str, session.commit(f"Forward update of {self.tile}"))
+
+
+def _none() -> None:
+    return None

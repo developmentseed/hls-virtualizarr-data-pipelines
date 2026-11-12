@@ -56,9 +56,9 @@ class VirtualizarrProcessor(Protocol):
 
         Choosing between the three is left to the implementation rather than
         expressed as separate Protocol methods, because how a dataset is
-        reshaped for a region write depends on the dataset. The reference
-        implementation's `write_plan` and `store_append_dimension` in
-        `virtualizarr_processor.processor` are a worked example.
+        reshaped for a region write depends on the dataset. The HLS
+        implementation's `Processor.process_file` in
+        `virtualizarr_processor.processor` is a worked example.
 
         Parameters
         ----------
@@ -85,25 +85,32 @@ class VirtualizarrProcessor(Protocol):
         """
         ...
 
-    def initialize_backfill_store(self, repo: Repository) -> str:
+    def initialize_backfill_store(
+        self, repo: Repository, granule_ids: list[str]
+    ) -> str:
         """
         Create the `backfill` branch off the current `main` tip and build the
-        full-shape array(s) and coordinates (metadata only), commit, and return
-        the base snapshot id.
+        full-shape array(s) and coordinates (metadata only) for the given
+        inventory, commit, and return the base snapshot id.
 
         The store is declared at its full extent up front because backfill writes
-        disjoint regions via region writes rather than appending. It also writes
+        disjoint regions via region writes rather than appending. The extent and
         the coordinate arrays (e.g. `time`) that region writes rely on to align
-        each per-file virtual dataset to the correct position. The session MUST
-        have no uncommitted changes after this returns, so that forks taken from
-        a fresh session share the committed branch-tip snapshot as their base.
+        each per-file virtual dataset come from `granule_ids`, the same inventory
+        the partitions are cut from, so every key a worker receives already has
+        a declared position. The session MUST have no uncommitted changes after
+        this returns, so that forks taken from a fresh session share the
+        committed branch-tip snapshot as their base.
 
         The `backfill` branch must not already exist. This method is intended to
-        be called exactly once per backfill run.
+        be called exactly once per backfill run. It raises, before creating the
+        branch, if any inventory entry does not belong to this store.
 
         Parameters
         ----------
             repo: An Icechunk Repository (durable storage; not in-memory).
+            granule_ids: The backfill inventory: every key the workers will be
+                given (for the HLS cube, granule IDs).
         Returns
         -------
         str
