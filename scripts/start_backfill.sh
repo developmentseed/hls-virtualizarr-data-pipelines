@@ -10,12 +10,12 @@
 #   scripts/start_backfill.sh <execution-name> <inventory-uri>
 #
 # Example:
-#   scripts/start_backfill.sh gpm-backfill-test-2yr \
-#     s3://gpm-imerghh-partitioned/inventory/gpm_2yr.json
+#   scripts/start_backfill.sh hls-t13sda-l30-backfill-1 \
+#     s3://<backfill-bucket>/inventory/inventory.json
 #
 # Overrides (env vars):
 #   STACK   CloudFormation stack name   (default: STACK_NAME from .env, else
-#           "gpm-imerghh-partitioned")
+#           "virtualizarr-data-pipelines", the StackSettings default)
 #   REGION  AWS region                  (default: ACCOUNT_REGION from .env, else
 #           the AWS CLI default)
 
@@ -23,7 +23,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <execution-name> <inventory-uri>" >&2
-  echo "  e.g. $0 gpm-backfill-test-2yr s3://bucket/inventory/gpm_2yr.json" >&2
+  echo "  e.g. $0 hls-t13sda-l30-backfill-1 s3://bucket/inventory/inventory.json" >&2
   exit 2
 }
 
@@ -42,7 +42,7 @@ env_get() {
 }
 
 STACK="${STACK:-$(env_get STACK_NAME)}"
-STACK="${STACK:-gpm-imerghh-partitioned}"
+STACK="${STACK:-virtualizarr-data-pipelines}"
 REGION="${REGION:-$(env_get ACCOUNT_REGION)}"
 
 # Region flag is only added when we actually have one; otherwise defer to the

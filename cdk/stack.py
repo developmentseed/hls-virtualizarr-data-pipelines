@@ -100,7 +100,7 @@ class VirtualizarrSqsStack(Stack):
 
         # Shared processor env: resolved by virtualizarr_processor at runtime to
         # open the icechunk store (ICECHUNK_BUCKET set => S3) and to read protected
-        # GES DISC granules via Earthdata (EARTHDATA_SECRET_ARN).
+        # LP DAAC HLS granules via Earthdata (EARTHDATA_SECRET_ARN).
         # Only include env keys when set so synth doesn't inject a None value,
         # and so an unset ICECHUNK_REGION leaves the region to icechunk rather
         # than pinning the bucket to the region this stack deploys into.
