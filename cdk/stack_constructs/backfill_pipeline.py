@@ -39,6 +39,7 @@ class BackfillPipeline(Construct):
         max_items_per_batch: int,
         max_concurrency: int,
         worker_memory_size: int = 4096,
+        reduce_memory_size: int = 10240,
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -77,7 +78,10 @@ class BackfillPipeline(Construct):
                 ),
                 architecture=lmb.Architecture.X86_64,
                 timeout=Duration.minutes(15),
-                memory_size=worker_memory_size if action == "worker" else 2048,
+                memory_size={
+                    "worker": worker_memory_size,
+                    "reduce": reduce_memory_size,
+                }.get(action, 2048),
                 environment=dict(env),
             )
             if earthdata_secret_arn and action in _COG_ACTIONS:

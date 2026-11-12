@@ -8,6 +8,7 @@ branch-tip snapshot.
 """
 
 import pickle
+from collections.abc import Iterable
 from typing import cast
 
 from icechunk import Repository
@@ -30,19 +31,22 @@ def create_fork(repo: Repository, *, branch: str = "backfill") -> bytes:
 
 def merge_and_commit(
     repo: Repository,
-    child_fork_bytes: list[bytes],
+    child_fork_bytes: Iterable[bytes],
     *,
     branch: str = "backfill",
     message: str,
 ) -> str:
     """Open a fresh writable session, merge all child forks, and commit once.
 
+    Forks are merged one at a time as ``child_fork_bytes`` yields them, so a
+    lazy iterable keeps only one serialized fork in memory at once.
+
     Returns the new tip snapshot id. Raises ``NothingToCommit`` when the
     forks carry no changes, rather than icechunk's generic commit error.
     """
     session = repo.writable_session(branch)
-    forks = [pickle.loads(b) for b in child_fork_bytes]
-    session.merge(*forks)
+    for fork_bytes in child_fork_bytes:
+        session.merge(pickle.loads(fork_bytes))
     if not session.has_uncommitted_changes:
         raise NothingToCommit(f"no changes to commit on {branch!r}")
     # cast: pre-commit mypy runs without icechunk, so commit() is Any there and

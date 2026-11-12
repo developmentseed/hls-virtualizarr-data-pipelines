@@ -50,7 +50,10 @@ def test_full_backfill_round_trip(
     child_a = _worker(fake_processor_factory(), shared, IDS[:3][::-1])
     child_b = _worker(fake_processor_factory(), shared, IDS[3:])
 
-    tip = backfill.merge_and_commit(repo, [child_a, child_b], message="backfill")
+    # a generator: Reduce streams forks so only one is in memory at a time
+    tip = backfill.merge_and_commit(
+        repo, (b for b in [child_a, child_b]), message="backfill"
+    )
     assert tip == repo.lookup_branch("backfill")
     assert _b04_values(processor, "backfill") == [1, 2, 3, 4, 5, 6]
 

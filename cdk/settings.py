@@ -96,6 +96,10 @@ class StackSettings(BaseSettings):
     # granule in their batch and hold the batch's refs in one fork; the other
     # backfill Lambdas stay at 2048. Lambda also scales CPU with memory.
     BACKFILL_WORKER_MEMORY_MB: int = Field(default=4096, ge=128, le=10240)
+    # Reduce Lambda memory (MB). Reduce merges a whole partition's forks into
+    # one commit (~8,010 chunk refs per granule x BACKFILL_PARTITION_SIZE); it
+    # ran out of memory at 2048 on a 500-granule partition. One per partition.
+    BACKFILL_REDUCE_MEMORY_MB: int = Field(default=10240, ge=128, le=10240)
 
     # Forward SQS consumer. `None` resolves in the validator below:
     #   backfill enabled  -> default disabled (bootstrap via backfill, enable later)

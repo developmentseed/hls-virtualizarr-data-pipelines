@@ -51,7 +51,8 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     skipped_uri = f"{event['run_prefix']}partitions/{partition_id}/skipped.json"
     inventory.write_json(skipped_uri, skipped)
 
-    children = [fork_store.load_fork(uri) for uri in child_uris]
+    # Streamed: each fork is downloaded and merged before the next is read.
+    children = (fork_store.load_fork(uri) for uri in child_uris if uri.endswith(".pkl"))
     try:
         tip = backfill.merge_and_commit(
             repo, children, message=f"Backfill partition {partition_id}"

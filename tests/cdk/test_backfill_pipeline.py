@@ -40,17 +40,19 @@ def _memory(template: Template, action: str) -> int:
     return int(fn["Properties"]["MemorySize"])
 
 
-def test_worker_memory_defaults_above_the_other_functions() -> None:
+def test_worker_and_reduce_memory_defaults() -> None:
     template = _template()
     assert _memory(template, "worker") == 4096
-    for action in ["partition", "init", "fork", "reduce", "promote"]:
+    assert _memory(template, "reduce") == 10240
+    for action in ["partition", "init", "fork", "promote"]:
         assert _memory(template, action) == 2048, action
 
 
-def test_worker_memory_is_configurable() -> None:
-    template = _template(worker_memory_size=6144)
+def test_worker_and_reduce_memory_are_configurable() -> None:
+    template = _template(worker_memory_size=6144, reduce_memory_size=8192)
     assert _memory(template, "worker") == 6144
-    assert _memory(template, "reduce") == 2048
+    assert _memory(template, "reduce") == 8192
+    assert _memory(template, "init") == 2048
 
 
 def test_six_functions_with_cmd_overrides() -> None:
