@@ -117,6 +117,20 @@ local and never upload them to shared storage.
   out-of-order granule still rewrites every split after its position when the
   time sort runs.
 
+### Exploring the cube
+
+`notebooks/explore_t13sda.ipynb` opens the cube read-only and walks through its
+structure, the time axis, per-scene cloud cover, a true-colour scene, an NDVI time
+series and seasonal cycle at a point, and a summer NDVI change map:
+
+```sh
+uv run --group notebook jupyter lab notebooks/explore_t13sda.ipynb
+```
+
+It needs AWS credentials for the cube's bucket and an Earthdata login in `~/.netrc`.
+Set `HLS_CUBE_LOCAL=<path>` to read a local repo instead. Any reader must
+`import virtual_tiff`, which registers the TIFF codecs zarr needs to decode chunks.
+
 ### Integration test
 
 `HLS_NETWORK_TESTS=1 uv run --with rasterio pytest tests/integration -v -m network`
