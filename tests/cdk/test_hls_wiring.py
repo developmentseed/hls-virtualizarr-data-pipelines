@@ -82,13 +82,11 @@ def test_initialize_lambda_gets_hls_env() -> None:
 
 
 def test_env_follows_settings() -> None:
-    fns = _processor_functions(
-        _template(MGRS_TILE="T10SGD", LPDAAC_ACCESS="https", ICECHUNK_NUM_CHUNK_REFS=7)
-    )
+    fns = _processor_functions(_template(MGRS_TILE="T10SGD", ICECHUNK_NUM_CHUNK_REFS=7))
     for res in fns.values():
         env = res["Properties"]["Environment"]["Variables"]
         assert env["MGRS_TILE"] == "T10SGD"
-        assert env["LPDAAC_ACCESS"] == "https"
+        assert env["LPDAAC_ACCESS"] == "s3"
         assert env["ICECHUNK_NUM_CHUNK_REFS"] == "7"
 
 

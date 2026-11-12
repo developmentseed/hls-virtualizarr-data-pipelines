@@ -88,6 +88,16 @@ ds = xr.open_zarr(
 In us-west-2, use an `icechunk.s3_store(region="us-west-2")` container on
 `s3://lp-prod-protected/` instead.
 
+### https access is local-only
+
+The deployed Lambdas read LP DAAC over s3 only (`LPDAAC_ACCESS` accepts only
+`s3` in the CDK settings). The processor's `access="https"` mode is for local
+runs (e.g. the integration test). In that mode the repo is created with a
+header-free https container and reopened with the bearer token in the
+in-memory config only, so the token is never written to repo storage. Pickles
+of an https-mode repo or backfill fork *do* carry the token, so keep them
+local and never upload them to shared storage.
+
 ### Integration test
 
 `HLS_NETWORK_TESTS=1 uv run --with rasterio pytest tests/integration -v -m network`

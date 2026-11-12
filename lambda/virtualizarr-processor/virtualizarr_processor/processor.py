@@ -108,6 +108,12 @@ def default_repo_opener(access: str) -> Callable[[], Repository]:
     ``ICECHUNK_BUCKET`` (with optional ``ICECHUNK_PREFIX``/``ICECHUNK_REGION``)
     selects S3 storage, else ``ICECHUNK_LOCAL_PATH`` a filesystem repo. The
     ``lpdaac`` virtual chunk container resolves ``vcc://lpdaac/...`` refs.
+
+    ``access="https"`` is a local/laptop mode (the deployed Lambdas are
+    s3-only): the repo is created with a header-free https container, then
+    reopened with the Earthdata bearer token in the in-memory config only, so
+    the token never reaches storage. A pickled https-mode repo or backfill
+    fork still carries the token -- keep such pickles local.
     """
 
     def opener() -> Repository:
@@ -125,18 +131,35 @@ def default_repo_opener(access: str) -> Callable[[], Repository]:
             storage = icechunk.local_filesystem_storage(local)
         else:
             raise ValueError("set ICECHUNK_BUCKET or ICECHUNK_LOCAL_PATH")
-        config = icechunk.RepositoryConfig.default()
-        token = earthdata_token() if access == "https" else None
-        config.set_virtual_chunk_container(virtual_chunk_container(access, token=token))
-        config.caching = icechunk.CachingConfig(
-            num_chunk_refs=int(
-                os.environ.get("ICECHUNK_NUM_CHUNK_REFS", DEFAULT_NUM_CHUNK_REFS)
-            )
+        num_chunk_refs = int(
+            os.environ.get("ICECHUNK_NUM_CHUNK_REFS", DEFAULT_NUM_CHUNK_REFS)
         )
-        return icechunk.Repository.open_or_create(
+
+        def config(
+            container: icechunk.VirtualChunkContainer,
+        ) -> icechunk.RepositoryConfig:
+            cfg = icechunk.RepositoryConfig.default()
+            cfg.set_virtual_chunk_container(container)
+            cfg.caching = icechunk.CachingConfig(num_chunk_refs=num_chunk_refs)
+            return cfg
+
+        credentials = container_credentials(access)
+        # Create (or open) with the header-free container: icechunk persists the
+        # config a repo is created with, so a token here would land in storage.
+        repo = icechunk.Repository.open_or_create(
             storage=storage,
-            config=config,
-            authorize_virtual_chunk_access=container_credentials(access),
+            config=config(virtual_chunk_container(access, persisted=True)),
+            authorize_virtual_chunk_access=credentials,
+        )
+        if access != "https":
+            return repo
+        # The bearer token lives only in this in-memory config; opening does
+        # not write the config back (nothing here calls ``save_config``).
+        token = earthdata_token()
+        return icechunk.Repository.open(
+            storage=storage,
+            config=config(virtual_chunk_container(access, token=token)),
+            authorize_virtual_chunk_access=credentials,
         )
 
     return opener

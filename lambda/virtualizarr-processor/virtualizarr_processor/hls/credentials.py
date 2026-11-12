@@ -76,7 +76,7 @@ def earthdata_token() -> str:
 
 
 def virtual_chunk_container(
-    access: str = "s3", *, token: str | None = None
+    access: str = "s3", *, token: str | None = None, persisted: bool = False
 ) -> icechunk.VirtualChunkContainer:
     """Where this reader resolves ``vcc://lpdaac/...`` references.
 
@@ -85,6 +85,14 @@ def virtual_chunk_container(
     of the same store can therefore disagree about how to reach an object
     without either of them being wrong -- one in us-west-2 over s3, one
     anywhere over https.
+
+    ``persisted=True`` returns the form safe to write into the repo config:
+    for https, an ``http_store()`` with no headers. icechunk saves the virtual
+    chunk containers of the config a repo is *created* with, headers
+    included, so the bearer token must only ever be in the config a repo is
+    *opened* with (in memory). https access is a local/laptop mode -- the
+    deployed Lambdas read over s3 -- and anything that pickles an https-mode
+    repo or fork (backfill fork bytes) carries the token with it.
     """
     if access not in ACCESS_MODES:
         raise ValueError(
@@ -98,6 +106,12 @@ def virtual_chunk_container(
             name=CONTAINER_NAME,
         )
 
+    if persisted:
+        return icechunk.VirtualChunkContainer(
+            url_prefix=LPDAAC_HTTPS_ASSET_PREFIX,
+            store=icechunk.http_store(),
+            name=CONTAINER_NAME,
+        )
     if token is None:
         raise ValueError(
             "https access needs a bearer token: icechunk's HTTP store takes "

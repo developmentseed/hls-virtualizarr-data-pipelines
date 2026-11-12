@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import pathlib
 
+import icechunk
 import numpy as np
 import pytest
 import xarray as xr
@@ -91,8 +92,18 @@ def test_real_granules_backfill_then_forward(tmp_path, monkeypatch) -> None:
     processor = Processor(tile=TILE, product="L30", access="https")
     repo = processor.initialize_repo()
 
-    # R12: the https container config must not persist the bearer token.
-    leaked = _token_in_tree(repo_dir, earthdata_token())
+    # R12/R13: the bearer token is in the in-memory config only, never in the
+    # config a fresh process reads back from storage. Storage is compressed,
+    # so the file walk below is only an extra check, not the proof.
+    token = earthdata_token()
+    assert token in repr(repo.config.virtual_chunk_containers)
+    assert any(repo_dir.rglob("*")), "repo dir is empty; the check would be vacuous"
+    stored = icechunk.Repository.open(
+        icechunk.local_filesystem_storage(str(repo_dir))
+    ).config.virtual_chunk_containers
+    assert "lpdaac" in repr(stored)
+    assert token not in repr(stored) and "Bearer" not in repr(stored), stored
+    leaked = _token_in_tree(repo_dir, token)
     assert not leaked, f"bearer token found in repo storage: {leaked}"
 
     # main needs a commit to branch from (the deployed init does this too)

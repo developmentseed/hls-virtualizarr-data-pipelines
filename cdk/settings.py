@@ -50,8 +50,11 @@ class StackSettings(BaseSettings):
     # Passed to every processor Lambda as MGRS_TILE / HLS_PRODUCT.
     MGRS_TILE: str = "T13SDA"
     HLS_PRODUCT: Literal["L30"] = "L30"
-    # How granule COGs are read: direct S3 (same-region, us-west-2) or HTTPS.
-    LPDAAC_ACCESS: Literal["s3", "https"] = "s3"
+    # How granule COGs are read. Deployed Lambdas are s3-only (same-region,
+    # us-west-2). The processor's https mode is local/laptop use only: its
+    # bearer token must never sit in Lambda env, repo config or fork pickles
+    # in shared storage.
+    LPDAAC_ACCESS: Literal["s3"] = "s3"
     # Icechunk chunk-ref cache size (ICECHUNK_NUM_CHUNK_REFS). The spike measured
     # 8,010 chunk refs per granule: 15 bands x (225 + 225 + 64 + 16 + 4) = 534
     # chunks per band. One backfill partition of BACKFILL_PARTITION_SIZE = 500

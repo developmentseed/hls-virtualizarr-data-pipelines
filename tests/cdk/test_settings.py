@@ -1,3 +1,5 @@
+import pydantic
+import pytest
 from settings import StackSettings
 
 
@@ -47,3 +49,9 @@ def test_hls_settings_defaults() -> None:
     assert settings.LPDAAC_ACCESS == "s3"
     assert settings.EARTHDATA_SECRET_ARN is None
     assert settings.ICECHUNK_NUM_CHUNK_REFS == 5_000_000
+
+
+def test_lpdaac_access_is_s3_only() -> None:
+    """R13: deployed Lambdas never read over https (no bearer token in Lambda)."""
+    with pytest.raises(pydantic.ValidationError):
+        StackSettings(STAGE="dev", ACCOUNT_ID="111111111111", LPDAAC_ACCESS="https")

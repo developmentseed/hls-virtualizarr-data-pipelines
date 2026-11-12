@@ -53,3 +53,52 @@ def test_bootstrap_noop_without_arn(monkeypatch, aws_region):
 
 def test_container_is_named_lpdaac():
     assert virtual_chunk_container("s3").name == "lpdaac"
+
+
+FAKE_TOKEN = "fake-edl-token-0123456789abcdef"
+
+
+def test_https_bearer_token_never_reaches_storage(tmp_path, monkeypatch):
+    """R13: the https container is persisted without headers; the token is
+    only in the in-memory config of the opened repo."""
+    import icechunk
+    import zarr
+    from virtualizarr_processor import processor as processor_module
+
+    repo_dir = tmp_path / "repo"
+    monkeypatch.setattr(processor_module, "earthdata_token", lambda: FAKE_TOKEN)
+    for name in ("ICECHUNK_BUCKET", "EARTHDATA_SECRET_ARN"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ICECHUNK_LOCAL_PATH", str(repo_dir))
+    opener = processor_module.default_repo_opener("https")
+
+    created = opener()  # create path
+    assert FAKE_TOKEN in repr(created.config.virtual_chunk_containers)
+    session = created.writable_session("main")
+    zarr.open_group(session.store, mode="a")
+    session.commit("init main")
+    reopened = opener()  # existing-repo path
+    assert FAKE_TOKEN in repr(reopened.config.virtual_chunk_containers)
+    session = reopened.writable_session("main")
+    zarr.open_group(session.store, mode="a").attrs["x"] = 1
+    session.commit("second commit")
+
+    assert any(repo_dir.rglob("*")), "repo dir is empty; the check would be vacuous"
+    stored = icechunk.Repository.open(
+        icechunk.local_filesystem_storage(str(repo_dir))
+    ).config.virtual_chunk_containers
+    assert "lpdaac" in repr(stored)
+    assert FAKE_TOKEN not in repr(stored)
+    assert "Bearer" not in repr(stored)
+    needle = FAKE_TOKEN.encode()
+    leaked = [
+        p for p in repo_dir.rglob("*") if p.is_file() and needle in p.read_bytes()
+    ]
+    assert not leaked
+
+
+def test_persisted_https_container_has_no_headers():
+    container = virtual_chunk_container("https", persisted=True)
+    assert "Bearer" not in repr(container)
+    with pytest.raises(ValueError, match="bearer token"):
+        virtual_chunk_container("https")
