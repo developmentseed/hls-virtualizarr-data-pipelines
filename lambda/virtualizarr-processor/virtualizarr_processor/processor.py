@@ -48,10 +48,11 @@ logger = logging.getLogger(__name__)
 
 #: icechunk's ``CachingConfig.num_chunk_refs`` raised above its default, after
 #: icechest-hls's measurement (a 14x commit slowdown with the default cache).
-#: A T13SDA L30 granule carries ~8,000 chunk refs (15 bands x all levels), and
-#: the whole archive is a few thousand granules, so this holds the full cube.
-#: Override with ``ICECHUNK_NUM_CHUNK_REFS``.
-DEFAULT_NUM_CHUNK_REFS = 65_000_000
+#: A T13SDA L30 granule carries 8,010 chunk refs (15 bands x 534 chunks over
+#: all levels), and the whole archive is ~5,000 granules: 5,000 x 8,010 is
+#: ~40M refs, the full cube that Reduce, forward commits and the time sort
+#: touch. Matches the CDK default; override with ``ICECHUNK_NUM_CHUNK_REFS``.
+DEFAULT_NUM_CHUNK_REFS = 40_000_000
 
 #: Attempts and initial backoff (seconds, doubled per retry) for opening one
 #: band's COG headers. A missing object (``FileNotFoundError``) is not retried.

@@ -48,7 +48,7 @@ def test_hls_settings_defaults() -> None:
     assert settings.HLS_PRODUCT == "L30"
     assert settings.LPDAAC_ACCESS == "s3"
     assert settings.EARTHDATA_SECRET_ARN is None
-    assert settings.ICECHUNK_NUM_CHUNK_REFS == 5_000_000
+    assert settings.ICECHUNK_NUM_CHUNK_REFS == 40_000_000
 
 
 def test_lpdaac_access_is_s3_only() -> None:

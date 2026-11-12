@@ -71,7 +71,7 @@ def test_processor_lambdas_get_hls_env() -> None:
         assert env["MGRS_TILE"] == "T13SDA", name
         assert env["HLS_PRODUCT"] == "L30", name
         assert env["LPDAAC_ACCESS"] == "s3", name
-        assert env["ICECHUNK_NUM_CHUNK_REFS"] == "5000000", name
+        assert env["ICECHUNK_NUM_CHUNK_REFS"] == "40000000", name
 
 
 def test_initialize_lambda_gets_hls_env() -> None:

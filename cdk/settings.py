@@ -57,10 +57,11 @@ class StackSettings(BaseSettings):
     LPDAAC_ACCESS: Literal["s3"] = "s3"
     # Icechunk chunk-ref cache size (ICECHUNK_NUM_CHUNK_REFS). The spike measured
     # 8,010 chunk refs per granule: 15 bands x (225 + 225 + 64 + 16 + 4) = 534
-    # chunks per band. One backfill partition of BACKFILL_PARTITION_SIZE = 500
-    # granules is 500 x 8,010 = 4,005,000 refs; 5,000,000 leaves headroom.
-    # Scale this with BACKFILL_PARTITION_SIZE (about 8,010 x partition size).
-    ICECHUNK_NUM_CHUNK_REFS: int = 5_000_000
+    # chunks per band. Sized for the whole cube, not one partition: later Reduce
+    # commits, forward commits and the time sort all touch the accumulated
+    # cube, ~5,000 granules x 8,010 refs = 40,050,000 refs. See README
+    # "Deploy-time risks".
+    ICECHUNK_NUM_CHUNK_REFS: int = 40_000_000
 
     # Freguency in days to run garbage collection.
     GARBAGE_COLLECTION_FREQUENCY: int | None = None

@@ -98,6 +98,21 @@ in-memory config only, so the token is never written to repo storage. Pickles
 of an https-mode repo or backfill fork *do* carry the token, so keep them
 local and never upload them to shared storage.
 
+### Deploy-time risks
+
+- **Commit cost at full cube size.** Every L30 granule is 8,010 virtual chunk
+  refs, so the full T13SDA archive (~5,000 granules) is ~40M refs. Later
+  backfill Reduce commits, forward commits and the forward time sort all work
+  against the accumulated cube, not one partition. `ICECHUNK_NUM_CHUNK_REFS`
+  defaults to `40_000_000` so the chunk-ref cache holds the whole cube, but
+  none of this has been measured at that size: at first deploy, time the last
+  Reduce, a forward commit and a forward sort, and watch the forward
+  (`process_messages`) Lambda's memory and duration against its limits.
+- **Manifest splitting.** If those commits are slow or memory-bound, consider
+  icechunk's `ManifestSplittingConfig` splitting manifests along `time`, so a
+  commit rewrites only the manifests for the time steps it touched. It is not
+  configured today; it is a design change to decide at that point.
+
 ### Integration test
 
 `HLS_NETWORK_TESTS=1 uv run --with rasterio pytest tests/integration -v -m network`
