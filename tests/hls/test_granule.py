@@ -67,6 +67,19 @@ def test_read_url_rejects_unknown_access():
 
 def test_l30_bands():
     assert BANDS["L30"] == (
-        "B01", "B02", "B03", "B04", "B05", "B06", "B07", "B09", "B10", "B11",
-        "Fmask", "SZA", "SAA", "VZA", "VAA",
+        "B01",
+        "B02",
+        "B03",
+        "B04",
+        "B05",
+        "B06",
+        "B07",
+        "B09",
+        "B10",
+        "B11",
+        "Fmask",
+        "SZA",
+        "SAA",
+        "VZA",
+        "VAA",
     )
