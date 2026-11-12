@@ -1744,6 +1744,7 @@ name = "virtualizarr-processor"
 version = "0.1.0"
 source = { editable = "lambda/virtualizarr-processor" }
 dependencies = [
+    { name = "boto3" },
     { name = "earthaccess-auth" },
     { name = "icechunk" },
     { name = "obspec-utils" },
@@ -1757,6 +1758,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3" },
     { name = "earthaccess-auth", specifier = ">=0.3.1" },
     { name = "icechunk", specifier = ">=2.1" },
     { name = "obspec-utils" },
