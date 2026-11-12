@@ -1,6 +1,7 @@
 # Spike findings: virtual time-stacking of HLS L30 COGs (T13SDA)
 
-Date: 2026-11-11 · Spike code: `spike/time_stack.py` (throwaway)
+Date: 2026-11-11 · Spike code: `spike/time_stack.py` (throwaway; removed from
+the tree, recoverable with `git show c598a71:spike/time_stack.py`).
 Run: `uv run --with rasterio python spike/time_stack.py` (~2 min from a laptop
 over https; writes `~/.cache/hls-spike/results.json`). Without rasterio it runs
 steps 1–5 but cannot do the direct-COG comparison and exits 2 (`UNVERIFIED`).
