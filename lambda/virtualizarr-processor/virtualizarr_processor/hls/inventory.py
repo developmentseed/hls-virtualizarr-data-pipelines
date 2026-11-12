@@ -17,8 +17,8 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
+import pyarrow as pa  # type: ignore[import-untyped]  # no stubs/py.typed
+import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
 from virtualizarr_processor.hls.assets import asset_key
 from virtualizarr_processor.hls.granule import Granule, parse_granule_id

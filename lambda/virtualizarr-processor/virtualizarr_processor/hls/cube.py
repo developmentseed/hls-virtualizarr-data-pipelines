@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import xarray as xr
@@ -67,10 +67,11 @@ def level_groups(store: Any, tile: str) -> list[str]:
         return []
     out = []
     for band in _child_groups(root):
-        band_group = root[band]
+        # cast: _child_groups yields only group members.
+        band_group = cast(zarr.Group, root[band])
         if MULTISCALES_GROUP not in band_group:
             continue
-        for level in _child_groups(band_group[MULTISCALES_GROUP]):
+        for level in _child_groups(cast(zarr.Group, band_group[MULTISCALES_GROUP])):
             out.append(f"{tile}/{band}/{MULTISCALES_GROUP}/{level}")
     return sorted(out)
 
@@ -279,4 +280,4 @@ def store_times(store: Any, tile: str) -> np.ndarray | None:
     if not groups:
         return None
     ds = xr.open_zarr(store, group=groups[0], consolidated=False, zarr_format=3)
-    return ds["time"].values
+    return cast(np.ndarray, ds["time"].values)

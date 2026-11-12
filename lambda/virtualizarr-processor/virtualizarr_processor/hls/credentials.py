@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 from functools import lru_cache
+from typing import TYPE_CHECKING, Any, cast
 
 import icechunk
 from earthaccess_auth import default_manager, login
@@ -24,6 +25,9 @@ from virtualizarr_processor.hls.assets import (
     LPDAAC_HTTPS_ASSET_PREFIX,
     LPDAAC_S3_PREFIX,
 )
+
+if TYPE_CHECKING:
+    from obspec_utils.registry import ObjectStoreRegistry
 
 LPDAAC_REGION = "us-west-2"
 ACCESS_MODES = ("s3", "https")
@@ -72,7 +76,9 @@ def earthdata_token() -> str:
     EDL token outlives any single run by weeks, so logging in twice buys
     nothing but a second round trip.
     """
-    return login(strategy="all").token["access_token"]
+    # cast: ``token`` is typed ``Mapping | None``; a successful login sets it.
+    token = cast(dict[str, Any], login(strategy="all").token)
+    return cast(str, token["access_token"])
 
 
 def virtual_chunk_container(
@@ -124,7 +130,9 @@ def virtual_chunk_container(
     )
 
 
-def container_credentials(access: str = "s3"):
+def container_credentials(
+    access: str = "s3",
+) -> dict[str, icechunk.AnyCredential | None]:
     """Credentials for the container, in the form ``Repository`` wants.
 
     The https container carries its bearer in a static header, so it needs no
@@ -144,7 +152,9 @@ def container_credentials(access: str = "s3"):
     )
 
 
-def object_store_registry(access: str = "s3", *, token: str | None = None):
+def object_store_registry(
+    access: str = "s3", *, token: str | None = None
+) -> ObjectStoreRegistry:
     """An obstore registry VirtualiZarr reads COG headers through.
 
     Separate from the container: that one is how a reader resolves a stored
@@ -176,6 +186,9 @@ def object_store_registry(access: str = "s3", *, token: str | None = None):
             region=LPDAAC_REGION,
             access_key_id=issued.access_key_id,
             secret_access_key=issued.secret_access_key,
-            token=issued.session_token,
+            # cast: icechunk types this ``str | None``; lpdaac_credentials
+            # always sets it. ``session_token`` is the S3 key (``token`` is an
+            # alias obstore's typed overloads do not list).
+            session_token=cast(str, issued.session_token),
         )
     return ObjectStoreRegistry({prefix: store})

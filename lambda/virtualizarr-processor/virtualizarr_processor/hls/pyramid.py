@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import xarray as xr
 import zarr
+from zarr.core.metadata import ArrayV3Metadata
 
 Pyramid = dict[int, xr.Dataset]
 PyramidOpener = Callable[[str, Any], Pyramid]
@@ -41,7 +42,7 @@ def open_pyramid(url: str, registry: Any) -> Pyramid:
 def _codecs(codecs: Any) -> list[Any]:
     # JSON round-trip so in-memory tuples equal the lists of reopened metadata
     raw = [c.to_dict() if hasattr(c, "to_dict") else c for c in codecs]
-    return json.loads(json.dumps(raw, default=str))
+    return cast(list[Any], json.loads(json.dumps(raw, default=str)))
 
 
 def check_level(declared: zarr.Array, level: xr.Dataset) -> None:
@@ -51,8 +52,9 @@ def check_level(declared: zarr.Array, level: xr.Dataset) -> None:
     CRS is deliberately not compared: the grid comes only from ``TILE_GRIDS``.
     """
     (name,) = list(level.data_vars)
-    got = level[name].data.metadata
-    want = declared.metadata
+    # cast: both are zarr v3 (the cube is declared v3; VirtualTIFF emits v3).
+    got = cast(ArrayV3Metadata, level[name].data.metadata)
+    want = cast(ArrayV3Metadata, declared.metadata)
 
     if tuple(want.shape[1:]) != tuple(got.shape):
         raise GridMismatch(f"shape: declared {want.shape[1:]}, granule {got.shape}")
@@ -66,7 +68,8 @@ def check_level(declared: zarr.Array, level: xr.Dataset) -> None:
         np.asarray(want.fill_value), np.asarray(got.fill_value), equal_nan=True
     ):
         raise GridMismatch(
-            f"fill value: declared {want.fill_value}, granule {got.fill_value}"
+            f"fill value: declared {str(want.fill_value)}, "
+            f"granule {str(got.fill_value)}"
         )
     if _codecs(want.codecs) != _codecs(got.codecs):
         raise GridMismatch(
