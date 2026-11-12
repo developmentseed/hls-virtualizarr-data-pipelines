@@ -7,7 +7,7 @@ from aws_lambda_powertools.utilities.typing import LambdaContext
 from virtualizarr_processor import backfill
 from virtualizarr_processor.processor import Processor
 
-from backfill_handlers import fork_store
+from backfill_handlers import fork_store, inventory
 
 logger = Logger()
 tracer = Tracer()
@@ -26,5 +26,17 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         repo, children, message=f"Backfill partition {partition_id}"
     )
 
-    logger.info("Committed partition", extra={"partition_id": partition_id, "tip": tip})
-    return {"partition_id": partition_id, "tip": tip}
+    by_granule: dict[str, dict[str, Any]] = {}
+    for uri in fork_store.list_forks(event["skipped_out_prefix"]):
+        for record in inventory.read_json(uri):
+            by_granule.setdefault(record["granule_id"], record)
+    skipped = [by_granule[g] for g in sorted(by_granule)]
+    inventory.write_json(
+        f"{event['run_prefix']}partitions/{partition_id}/skipped.json", skipped
+    )
+
+    logger.info(
+        "Committed partition",
+        extra={"partition_id": partition_id, "tip": tip, "skipped": len(skipped)},
+    )
+    return {"partition_id": partition_id, "tip": tip, "skipped": len(skipped)}

@@ -40,6 +40,7 @@ def test_full_backfill_chain(
                 {
                     "fork_in_uri": fork_result["fork_in_uri"],
                     "forks_out_prefix": fork_result["forks_out_prefix"],
+                    "skipped_out_prefix": fork_result["skipped_out_prefix"],
                     "file_keys": [file_key],
                 },
                 lambda_context,
@@ -47,7 +48,9 @@ def test_full_backfill_chain(
         reduce.handler(
             {
                 "partition_id": part["partition_id"],
+                "run_prefix": run_prefix,
                 "forks_out_prefix": fork_result["forks_out_prefix"],
+                "skipped_out_prefix": fork_result["skipped_out_prefix"],
             },
             lambda_context,
         )

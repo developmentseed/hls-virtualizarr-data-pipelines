@@ -131,7 +131,9 @@ class BackfillPipeline(Construct):
             self,
             "InitTask",
             lambda_function=self.functions["init"],
-            payload=sfn.TaskInput.from_object({}),
+            payload=sfn.TaskInput.from_object(
+                {"inventory_uri": sfn.JsonPath.string_at("$.inventory_uri")}
+            ),
             payload_response_only=True,
             result_path="$.initResult",
         )
@@ -154,6 +156,9 @@ class BackfillPipeline(Construct):
                     "fork_in_uri": sfn.JsonPath.string_at("$.BatchInput.fork_in_uri"),
                     "forks_out_prefix": sfn.JsonPath.string_at(
                         "$.BatchInput.forks_out_prefix"
+                    ),
+                    "skipped_out_prefix": sfn.JsonPath.string_at(
+                        "$.BatchInput.skipped_out_prefix"
                     ),
                 }
             ),
@@ -182,6 +187,7 @@ class BackfillPipeline(Construct):
                 batch_input={
                     "fork_in_uri.$": "$.forkResult.fork_in_uri",
                     "forks_out_prefix.$": "$.forkResult.forks_out_prefix",
+                    "skipped_out_prefix.$": "$.forkResult.skipped_out_prefix",
                 },
             ),
             max_concurrency=max_concurrency,
@@ -200,8 +206,12 @@ class BackfillPipeline(Construct):
             payload=sfn.TaskInput.from_object(
                 {
                     "partition_id": sfn.JsonPath.string_at("$.partition_id"),
+                    "run_prefix": sfn.JsonPath.string_at("$.run_prefix"),
                     "forks_out_prefix": sfn.JsonPath.string_at(
                         "$.forkResult.forks_out_prefix"
+                    ),
+                    "skipped_out_prefix": sfn.JsonPath.string_at(
+                        "$.forkResult.skipped_out_prefix"
                     ),
                 }
             ),

@@ -20,6 +20,8 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     run_prefix = event["run_prefix"]
     fork_in_uri = f"{run_prefix}forks/{partition_id}/in/fork.pkl"
     forks_out_prefix = f"{run_prefix}forks/{partition_id}/out/"
+    # Distinct from forks_out_prefix so list_forks never sees skip files.
+    skipped_out_prefix = f"{run_prefix}forks/{partition_id}/skipped/"
 
     processor = Processor()
     repo = processor.open_backfill_repo()
@@ -31,4 +33,5 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         "manifest_uri": event["manifest_uri"],
         "fork_in_uri": fork_in_uri,
         "forks_out_prefix": forks_out_prefix,
+        "skipped_out_prefix": skipped_out_prefix,
     }

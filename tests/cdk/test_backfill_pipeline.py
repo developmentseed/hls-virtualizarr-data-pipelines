@@ -1,3 +1,5 @@
+import json
+
 import aws_cdk as cdk
 import aws_cdk.aws_s3 as s3
 from aws_cdk.assertions import Match, Template
@@ -113,3 +115,20 @@ def test_state_machine_shape() -> None:
     assert '"forks_out_prefix.$":"$.forkResult.forks_out_prefix"' in asl
     # run_prefix derives from the execution name
     assert "Execution.Name" in asl
+
+
+def test_state_machine_passes_inventory_to_init() -> None:
+    asl = _state_machine_asl()
+    init_state = json.loads(asl)["States"]["InitTask"]
+    assert init_state["Parameters"] == {"inventory_uri.$": "$.inventory_uri"}
+
+
+def test_state_machine_passes_skip_prefix() -> None:
+    asl = _state_machine_asl()
+    assert '"skipped_out_prefix.$":"$.forkResult.skipped_out_prefix"' in asl
+    states = json.loads(asl)["States"]
+    reduce_payload = states["OuterMap"]["ItemProcessor"]["States"]["ReduceTask"][
+        "Parameters"
+    ]
+    assert reduce_payload["run_prefix.$"] == "$.run_prefix"
+    assert reduce_payload["skipped_out_prefix.$"] == "$.forkResult.skipped_out_prefix"

@@ -1,7 +1,7 @@
 """Read the S3 inventory file and read/write partition manifests (JSON key lists)."""
 
 import json
-from typing import cast
+from typing import Any, cast
 
 from backfill_handlers.config import parse_s3_uri, s3_client
 
@@ -25,3 +25,16 @@ def read_manifest(uri: str) -> list[str]:
     bucket, key = parse_s3_uri(uri)
     body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
     return cast(list[str], json.loads(body))
+
+
+def read_json(uri: str) -> Any:
+    """Read and parse a JSON object from S3."""
+    bucket, key = parse_s3_uri(uri)
+    body = s3_client().get_object(Bucket=bucket, Key=key)["Body"].read()
+    return json.loads(body)
+
+
+def write_json(uri: str, obj: Any) -> None:
+    """Serialize ``obj`` as JSON and write it to S3."""
+    bucket, key = parse_s3_uri(uri)
+    s3_client().put_object(Bucket=bucket, Key=key, Body=json.dumps(obj).encode())
