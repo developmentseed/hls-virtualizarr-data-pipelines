@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import unquote
 
-_GRANULE_ID = re.compile(
-    r"HLS\.(L30|S30)\.(T\d{2}[A-Z]{3})\.(\d{7})T(\d{6})\.v2\.0"
-)
+_GRANULE_ID = re.compile(r"HLS\.(L30|S30)\.(T\d{2}[A-Z]{3})\.(\d{7})T(\d{6})\.v2\.0")
 
 BANDS: dict[str, tuple[str, ...]] = {
     "L30": (

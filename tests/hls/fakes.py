@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from virtualizarr_processor.hls.assets import asset_key
 from virtualizarr_processor.hls.granule import parse_granule_id
 from virtualizarr_processor.hls.grid import TileGrid
 from virtualizarr_processor.hls.pyramid import Pyramid
-from zarr.codecs import BytesCodec
+from zarr.codecs import BytesCodec, ZstdCodec
 from zarr.core.dtype import parse_data_type
 from zarr.core.metadata import ArrayV3Metadata
 
@@ -75,6 +76,8 @@ class FakeAssets:
         levels: tuple[tuple[int, int], ...] = ((8, 8), (4, 4)),
         chunks: tuple[int, int] = (4, 4),
         dtype: str = "uint16",
+        fill_value: int = 0,
+        compress: bool = False,
     ) -> None:
         """Write one asset: every level's chunks, each filled with ``value``.
 
@@ -87,7 +90,17 @@ class FakeAssets:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(chunk * n_chunks)
         # sidecar so the opener can rebuild the layout without parsing a TIFF
-        path.with_suffix(".layout").write_text(repr((levels, chunks, dtype)))
+        path.with_suffix(".layout").write_text(
+            repr(
+                {
+                    "levels": levels,
+                    "chunks": chunks,
+                    "dtype": dtype,
+                    "fill_value": fill_value,
+                    "compress": compress,
+                }
+            )
+        )
         self._missing.discard((granule_id, band))
 
     def missing(self, granule_id: str, band: str) -> None:
@@ -102,11 +115,11 @@ class FakeAssets:
         if (gid, band) in self._missing:
             raise FileNotFoundError(url)
         path = self.path(gid, band)
-        levels, chunks, dtype = eval(path.with_suffix(".layout").read_text())  # noqa: S307
-        return _pyramid(f"file://{path}", levels, chunks, dtype)
+        layout = ast.literal_eval(path.with_suffix(".layout").read_text())
+        return _pyramid(f"file://{path}", **layout)
 
 
-def _pyramid(path: str, levels, chunks, dtype) -> Pyramid:
+def _pyramid(path: str, levels, chunks, dtype, fill_value=0, compress=False) -> Pyramid:
     cy, cx = chunks
     data_type = parse_data_type(np.dtype(dtype), zarr_format=3)
     chunk_bytes = cy * cx * np.dtype(dtype).itemsize
@@ -133,8 +146,8 @@ def _pyramid(path: str, levels, chunks, dtype) -> Pyramid:
                     "configuration": {"chunk_shape": chunks},
                 },
                 chunk_key_encoding={"name": "default"},
-                fill_value=data_type.default_scalar(),
-                codecs=[BytesCodec()],
+                fill_value=data_type.to_json_scalar(fill_value, zarr_format=3),
+                codecs=[BytesCodec(), ZstdCodec()] if compress else [BytesCodec()],
                 attributes={},
                 dimension_names=("y", "x"),
                 storage_transformers=None,
@@ -159,7 +172,7 @@ def declare_like(repo: icechunk.Repository, level_ds: xr.Dataset, n_time: int = 
         dtype=md.data_type.to_native_dtype(),
         fill_value=md.fill_value,
         serializer=md.codecs[0],
-        compressors=None,
+        compressors=[c for c in md.codecs[1:]] or None,
         filters=None,
         dimension_names=("time", "y", "x"),
         zarr_format=3,

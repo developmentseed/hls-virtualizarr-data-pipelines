@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
@@ -38,7 +39,9 @@ def open_pyramid(url: str, registry: Any) -> Pyramid:
 
 
 def _codecs(codecs: Any) -> list[Any]:
-    return [c.to_dict() if hasattr(c, "to_dict") else c for c in codecs]
+    # JSON round-trip so in-memory tuples equal the lists of reopened metadata
+    raw = [c.to_dict() if hasattr(c, "to_dict") else c for c in codecs]
+    return json.loads(json.dumps(raw, default=str))
 
 
 def check_level(declared: zarr.Array, level: xr.Dataset) -> None:
