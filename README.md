@@ -4,6 +4,99 @@ A single-MGRS-tile HLS L30 datacube, built as an Icechunk store on top of the vi
 
 ---
 
+## HLS L30 T13SDA cube
+
+> **Status: nothing has been deployed.** Everything below describes how the
+> pipeline is meant to be operated; it has been exercised only against local
+> repos and (opt-in, see below) real LP DAAC granules read over https.
+
+### What the cube is
+
+One Icechunk repository holds one MGRS tile (`T13SDA`) of one HLS product
+(`L30`) as a time-indexed datacube. Each band and each overview level is its
+own Zarr group, with chunks that are virtual references into the original COGs
+(recorded as relative `vcc://lpdaac/...` URLs, so no endpoint is baked in):
+
+```
+/T13SDA/{band}/multiscales/{level}/{band}   dims (time, y, x), chunks (1, cy, cx)
+/T13SDA/{band}/multiscales/{level}/time     int64 seconds since 1970-01-01
+```
+
+Level 0 is the native 30 m grid (256x256 chunks); levels 1-4 are the COG
+overviews (128x128 chunks). Granules are written in time order after a final
+sort, whichever order they arrived in.
+
+### Operating guide
+
+1. **Build the inventory** of granule IDs from the LP DAAC metadata archive:
+   `uv run python scripts/build_inventory.py --tile T13SDA --product L30 --start 2013-04 --end YYYY-MM --out DIR --upload s3://<backfill-bucket>/inventory/`
+2. **Deploy with backfill enabled.** Copy `.env.sample` to `.env`, set
+   `BACKFILL_ENABLED=true`, `EARTHDATA_SECRET_ARN` (a Secrets Manager secret
+   holding `{"username", "password"}`), `BACKFILL_BUCKET_NAME` and the other
+   values shown there, then deploy the CDK stack. The forward queue stays off
+   while a backfill is enabled.
+3. **Start the backfill:**
+   `scripts/start_backfill.sh <execution-name> s3://<backfill-bucket>/inventory/inventory.json`
+4. **Inspect skips.** Granules that could not be read or did not match the grid
+   are skipped, not fatal. Look at `partitions/*/skipped.json` under the run's
+   prefix in the backfill bucket; each record gives the granule, the stage
+   (`parse`, `open`, `check`, `write`) and the error. Skipped granules can be
+   enqueued later (step 6).
+5. **Enable forward processing:** once the backfill has promoted to `main`, set
+   `FORWARD_QUEUE_ENABLED=true` and redeploy.
+6. **Enqueue new granules** with `scripts/enqueue_granules.py --queue-url <url>
+   [--from FILE | IDS...] [--since YYYY-MM-DD]`. There is no SNS feed for HLS
+   yet, so nothing announces new granules automatically; run this on a
+   schedule or by hand.
+
+### Opening the cube
+
+The `lpdaac` virtual chunk container must be supplied when opening the repo.
+Over https (from anywhere) it needs an Earthdata bearer token:
+
+```python
+import icechunk, xarray as xr
+from earthaccess_auth import login
+
+P = "https://data.lpdaac.earthdatacloud.nasa.gov/lp-prod-protected/"
+token = login(strategy="all").token["access_token"]
+config = icechunk.RepositoryConfig.default()
+config.set_virtual_chunk_container(
+    icechunk.VirtualChunkContainer(
+        url_prefix=P,
+        store=icechunk.http_store(headers={"Authorization": f"Bearer {token}"}),
+        name="lpdaac",
+    )
+)
+repo = icechunk.Repository.open(
+    icechunk.s3_storage(bucket="<icechunk-bucket>", prefix="<prefix>", from_env=True),
+    config=config,
+    authorize_virtual_chunk_access=icechunk.containers_credentials(
+        {P: icechunk.Credentials.HttpAccess()}
+    ),
+)
+session = repo.readonly_session("main")
+ds = xr.open_zarr(
+    session.store,
+    group="T13SDA/B04/multiscales/0",
+    consolidated=False,
+    zarr_format=3,
+    mask_and_scale=False,
+)
+```
+
+In us-west-2, use an `icechunk.s3_store(region="us-west-2")` container on
+`s3://lp-prod-protected/` instead.
+
+### Integration test
+
+`HLS_NETWORK_TESTS=1 uv run --with rasterio pytest tests/integration -v -m network`
+backfills three real granules, appends a fourth, and checks pixels against
+direct COG reads. It needs an Earthdata login in `~/.netrc`; it is excluded
+from the default `pytest` run.
+
+---
+
 ## virtualizarr-data-pipelines
 
 Virtualizarr Data Pipelines is a [github template repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/creating-a-repository-from-a-template) intended to help users create and manage Virtualizarr/Icechunk stores on AWS in a consistent, scalable way.

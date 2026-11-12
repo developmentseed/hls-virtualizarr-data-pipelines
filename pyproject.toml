@@ -58,3 +58,5 @@ files = ["lambda", "cdk"]
 
 [tool.pytest.ini_options]
 pythonpath = ["lambda"]
+addopts = "-m 'not network'"
+markers = ["network: hits LP DAAC over the network (needs HLS_NETWORK_TESTS=1)"]
