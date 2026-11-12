@@ -170,6 +170,8 @@ def test_append_extends_every_group(hls_repo, fake_assets, reference_pyramids):
         TIMES[2].replace(tzinfo=None)
     )
     assert _level0(s)["B04"].isel(time=2).values.max() == 3
+    for g in level_groups(s.store, "T13SDA"):
+        assert zarr.open_array(s.store, path=f"{g}/time").dtype == np.int64
 
 
 def test_write_granule_mismatch_writes_nothing(
@@ -223,3 +225,56 @@ def test_open_granule_opens_every_band_or_raises(fake_assets):
     assert fake_assets.opened[0] == local_locator(fake_assets.root).read_url(
         asset_key(parse_granule_id(IDS[0]), "B04")
     )
+
+
+def _declared_committed(hls_repo, fake_assets, reference_pyramids, times):
+    s = hls_repo.writable_session("main")
+    declare_cube(s.store, FAKE_GRID, times, reference_pyramids)
+    s.commit("declare")
+    for band in BANDS:
+        fake_assets.write(IDS[2], band, 3)
+    return hls_repo.writable_session("main")
+
+
+def test_append_existing_time_raises_and_writes_nothing(
+    hls_repo, fake_assets, reference_pyramids
+):
+    s = _declared_committed(hls_repo, fake_assets, reference_pyramids, TIMES)
+    with pytest.raises(ValueError, match="already on the time axis"):
+        _write(s, fake_assets, IDS[2], "append")
+    assert not s.has_uncommitted_changes
+
+
+def test_region_absent_time_raises_and_writes_nothing(
+    hls_repo, fake_assets, reference_pyramids
+):
+    s = _declared_committed(hls_repo, fake_assets, reference_pyramids, TIMES[:2])
+    with pytest.raises(ValueError, match="not on the time axis"):
+        _write(s, fake_assets, IDS[2], "region")
+    assert not s.has_uncommitted_changes
+
+
+def test_diverged_time_lengths_raise(hls_repo, fake_assets, reference_pyramids):
+    s = hls_repo.writable_session("main")
+    declare_cube(s.store, FAKE_GRID, TIMES[:2], reference_pyramids)
+    for band in BANDS:
+        fake_assets.write(IDS[1], band, 2)
+        fake_assets.write(IDS[2], band, 3)
+    # diverge one group by appending only to it
+    ds = granule_levels(
+        parse_granule_id(IDS[2]),
+        "Fmask",
+        _open(fake_assets, IDS[2])["Fmask"],
+        reference_url_for=local_locator(fake_assets.root).reference_url,
+    )[1]
+    ds.vz.to_icechunk(
+        s.store,
+        group="T13SDA/Fmask/multiscales/1",
+        append_dim="time",
+        validate_containers=False,
+    )
+    s.commit("diverge")
+    s = hls_repo.writable_session("main")
+    with pytest.raises(ValueError, match="diverged"):
+        _write(s, fake_assets, IDS[1], "region")
+    assert not s.has_uncommitted_changes

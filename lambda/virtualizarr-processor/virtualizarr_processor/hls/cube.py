@@ -129,21 +129,6 @@ def declare_cube(
         )
 
 
-def _without_dimension_names(array: ManifestArray) -> ManifestArray:
-    """Drop ``dimension_names`` so prepending ``time`` cannot leave them stale.
-
-    virtualizarr's ``expand_dims`` keeps the 2-d names on 3-d metadata and
-    fails validation; the written names come from the xarray dims anyway.
-    """
-    if array.metadata.dimension_names is None:
-        return array
-    spec = array.metadata.to_dict()
-    spec.pop("dimension_names", None)
-    return ManifestArray(
-        chunkmanifest=array.manifest, metadata=ArrayV3Metadata.from_dict(spec)
-    )
-
-
 def granule_levels(
     granule: Granule,
     band: str,
@@ -166,7 +151,6 @@ def granule_levels(
         (name,) = list(level_ds.data_vars)
         ds = level_ds.rename({name: band})
         ds = ds.drop_vars([v for v in ds.variables if v != band])
-        ds[band] = ds[band].copy(data=_without_dimension_names(ds[band].data))
         ds = ds.vz.rename_paths(url)
         ds = ds.expand_dims(time=time)
         ds.attrs = {}
@@ -188,6 +172,31 @@ def open_granule(
     }
 
 
+def _check_time_axis(
+    store: Any, tile: str, granule: Granule, mode: Literal["region", "append"]
+) -> None:
+    groups = level_groups(store, tile)
+    lengths = {
+        g: zarr.open_array(store, path=f"{g}/time", mode="r").shape[0] for g in groups
+    }
+    if len(set(lengths.values())) > 1:
+        raise ValueError(f"{tile}: level groups have diverged time lengths {lengths}")
+    times = store_times(store, tile)
+    if times is None:
+        raise GridMismatch(f"{tile}: no declared level groups")
+    (when,) = _datetime64([granule.time])
+    matches = int(np.count_nonzero(times == when))
+    if mode == "region" and matches != 1:
+        raise ValueError(
+            f"{granule.id}: time {when} not on the time axis exactly once "
+            f"({matches} matches); region write needs it declared"
+        )
+    if mode == "append" and matches:
+        raise ValueError(
+            f"{granule.id}: time {when} already on the time axis; cannot append"
+        )
+
+
 def write_granule(
     store: Any,
     tile: str,
@@ -205,7 +214,18 @@ def write_granule(
     written. ``mode="region"`` fills an already-declared time step;
     ``"append"`` extends the time axis. ``reference_url_for`` maps an asset
     key to the URL recorded in the manifest.
+
+    The time axis is checked first too: every level group must have the same
+    time length, and the granule's time must be on the axis exactly once for
+    ``"region"`` and absent for ``"append"`` -- otherwise ``ValueError``, with
+    nothing written.
+
+    Partial failure: the pre-flight cannot rule out an I/O error part-way
+    through the write loop, which (in append mode especially) can leave the
+    uncommitted session or fork with groups whose time axes have diverged.
+    Callers must discard the session/fork on any exception, never commit it.
     """
+    _check_time_axis(store, tile, granule, mode)
     declared = _declared_levels(store, tile)
     if set(pyramids) != set(declared):
         raise GridMismatch(

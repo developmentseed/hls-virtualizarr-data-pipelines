@@ -153,7 +153,9 @@ def _pyramid(path: str, levels, chunks, dtype, fill_value=0, compress=False) -> 
                 storage_transformers=None,
             ),
         )
-        out[level] = xr.Dataset({"band_data": xr.Variable(("y", "x"), array)})
+        # wrap as virtualizarr does: to_virtual_variable moves dimension_names
+        # (and attributes) off the ManifestArray and onto the xarray Variable
+        out[level] = xr.Dataset({"band_data": array.to_virtual_variable()})
     return out
 
 
