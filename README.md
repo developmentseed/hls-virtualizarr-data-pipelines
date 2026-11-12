@@ -221,6 +221,7 @@ Backfill is configured through the same [settings module](./cdk/settings.py) / `
 - **BACKFILL_PARTITION_SIZE** (default `500`) — number of files per partition. Each
   partition becomes one merged commit.
 - **BACKFILL_MAX_ITEMS_PER_BATCH** (default `10`) — number of file keys processed by each worker Lambda (the inner Distributed Map's batch size). Each batch becomes one child fork.  Keep Lambda timeout limits in mind when configuring this.
+- **BACKFILL_WORKER_MEMORY_MB** (default `4096`, 128–10240) — memory for the backfill worker Lambda only; the other backfill Lambdas use 2048. Size it from the worker's CloudWatch `REPORT` lines (`Max Memory Used`); more memory also buys more CPU.
 - **BACKFILL_MAX_CONCURRENCY** (default `50`) — maximum number of worker Lambdas running in parallel within a partition.  Note that if you are using dependent rate limited APIs like NASA EDL use appropriate settings here to avoid service throttling.
 - **ICECHUNK_BUCKET_NAME** - the name for the S3 bucket to create holding the Icechunk store.
 - **ICECHUNK_REGION** - the region of the Icechunk bucket. Only needed when that

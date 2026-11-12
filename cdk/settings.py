@@ -1,7 +1,7 @@
 import os
 from typing import Any, Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 print("STAGE from env:", os.getenv("STAGE"))
@@ -92,6 +92,10 @@ class StackSettings(BaseSettings):
     BACKFILL_PARTITION_SIZE: int = 500
     BACKFILL_MAX_ITEMS_PER_BATCH: int = 10
     BACKFILL_MAX_CONCURRENCY: int = 50
+    # Worker Lambda memory (MB). Workers open every band's COG pyramid for each
+    # granule in their batch and hold the batch's refs in one fork; the other
+    # backfill Lambdas stay at 2048. Lambda also scales CPU with memory.
+    BACKFILL_WORKER_MEMORY_MB: int = Field(default=4096, ge=128, le=10240)
 
     # Forward SQS consumer. `None` resolves in the validator below:
     #   backfill enabled  -> default disabled (bootstrap via backfill, enable later)

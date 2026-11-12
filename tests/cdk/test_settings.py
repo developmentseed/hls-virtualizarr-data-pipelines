@@ -9,6 +9,7 @@ def test_backfill_settings_defaults() -> None:
     assert settings.BACKFILL_PARTITION_SIZE == 500
     assert settings.BACKFILL_MAX_ITEMS_PER_BATCH == 10
     assert settings.BACKFILL_MAX_CONCURRENCY == 50
+    assert settings.BACKFILL_WORKER_MEMORY_MB == 4096
 
 
 def test_forward_queue_enabled_defaults_on_when_backfill_off() -> None:
@@ -55,3 +56,11 @@ def test_lpdaac_access_is_s3_only() -> None:
     """R13: deployed Lambdas never read over https (no bearer token in Lambda)."""
     with pytest.raises(pydantic.ValidationError):
         StackSettings(STAGE="dev", ACCOUNT_ID="111111111111", LPDAAC_ACCESS="https")
+
+
+@pytest.mark.parametrize("memory", [127, 10241])
+def test_backfill_worker_memory_must_be_a_lambda_size(memory: int) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        StackSettings(
+            STAGE="dev", ACCOUNT_ID="111111111111", BACKFILL_WORKER_MEMORY_MB=memory
+        )

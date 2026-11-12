@@ -343,6 +343,7 @@ class VirtualizarrSqsStack(Stack):
                 partition_size=settings.BACKFILL_PARTITION_SIZE,
                 max_items_per_batch=settings.BACKFILL_MAX_ITEMS_PER_BATCH,
                 max_concurrency=settings.BACKFILL_MAX_CONCURRENCY,
+                worker_memory_size=settings.BACKFILL_WORKER_MEMORY_MB,
                 earthdata_secret_arn=settings.EARTHDATA_SECRET_ARN,
                 processor_env=hls_env,
             )

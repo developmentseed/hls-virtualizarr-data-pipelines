@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 import aws_cdk as cdk
 import aws_cdk.aws_s3 as s3
@@ -6,7 +7,7 @@ from aws_cdk.assertions import Match, Template
 from stack_constructs.backfill_pipeline import BackfillPipeline
 
 
-def _template() -> Template:
+def _template(**overrides: Any) -> Template:
     app = cdk.App()
     stack = cdk.Stack(
         app,
@@ -24,8 +25,32 @@ def _template() -> Template:
         partition_size=500,
         max_items_per_batch=10,
         max_concurrency=50,
+        **overrides,
     )
     return Template.from_stack(stack)
+
+
+def _memory(template: Template, action: str) -> int:
+    (fn,) = [
+        r
+        for r in template.find_resources("AWS::Lambda::Function").values()
+        if r["Properties"]["ImageConfig"]["Command"]
+        == [f"backfill_handlers.{action}.handler"]
+    ]
+    return int(fn["Properties"]["MemorySize"])
+
+
+def test_worker_memory_defaults_above_the_other_functions() -> None:
+    template = _template()
+    assert _memory(template, "worker") == 4096
+    for action in ["partition", "init", "fork", "reduce", "promote"]:
+        assert _memory(template, action) == 2048, action
+
+
+def test_worker_memory_is_configurable() -> None:
+    template = _template(worker_memory_size=6144)
+    assert _memory(template, "worker") == 6144
+    assert _memory(template, "reduce") == 2048
 
 
 def test_six_functions_with_cmd_overrides() -> None:
