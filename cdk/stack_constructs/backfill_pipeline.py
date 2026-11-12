@@ -166,6 +166,15 @@ class BackfillPipeline(Construct):
             ),
             payload_response_only=True,
         )
+        # A worker that raises (including R11's partial "write" failure) is
+        # retried with the same batch: the handler starts from a fresh child
+        # fork each attempt, so a retry never builds on a partial write.
+        worker.add_retry(
+            errors=["States.ALL"],
+            max_attempts=3,
+            backoff_rate=2,
+            interval=Duration.seconds(10),
+        )
 
         inner_map = sfn.DistributedMap(
             self,

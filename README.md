@@ -232,6 +232,29 @@ for the files to be processed.  Upload it to the backfill artifacts bucket
 client in the stack's own region, so an inventory in a bucket in another region
 cannot be read.
 
+#### Recovering a failed backfill
+Each worker batch is retried by Step Functions (`States.ALL`, 3 attempts,
+10 s interval, backoff 2), each attempt from a fresh child fork. A batch that
+still fails fails the whole execution. Re-running is not a resume: the init
+step calls `create_branch("backfill", ...)`, which fails if a `backfill`
+branch is left over from the failed run. Before re-running, delete it:
+
+```python
+import icechunk
+
+repo = icechunk.Repository.open(
+    icechunk.s3_storage(bucket="<icechunk-bucket>", prefix="<prefix>", from_env=True)
+)
+repo.delete_branch("backfill")
+```
+
+Deleting the branch discards everything on it, including the partitions the
+failed run already committed there; the re-run declares the cube again and
+processes every partition from the start. `main` is untouched until the
+promote step, so it is unaffected. (The deleted snapshots are reclaimed by a
+later garbage collection.) Use a new execution name for the re-run so its
+forks and skip records land under a fresh run prefix.
+
 
 ### Forward Processing :arrow_forward:
 Forward processing handles **new production files as they become available**.

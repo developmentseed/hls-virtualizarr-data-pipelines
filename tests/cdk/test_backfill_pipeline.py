@@ -132,3 +132,19 @@ def test_state_machine_passes_skip_prefix() -> None:
     ]
     assert reduce_payload["run_prefix.$"] == "$.run_prefix"
     assert reduce_payload["skipped_out_prefix.$"] == "$.forkResult.skipped_out_prefix"
+
+
+def test_worker_task_retries_all_errors() -> None:
+    """R15: a raising worker (e.g. a partial write) is retried by Step Functions."""
+    states = json.loads(_state_machine_asl())["States"]
+    inner = states["OuterMap"]["ItemProcessor"]["States"]["InnerMap"]
+    worker = inner["ItemProcessor"]["States"]["WorkerTask"]
+    retry = [r for r in worker["Retry"] if r["ErrorEquals"] == ["States.ALL"]]
+    assert retry == [
+        {
+            "ErrorEquals": ["States.ALL"],
+            "IntervalSeconds": 10,
+            "MaxAttempts": 3,
+            "BackoffRate": 2,
+        }
+    ]

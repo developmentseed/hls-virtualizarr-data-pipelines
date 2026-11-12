@@ -13,6 +13,10 @@ logger = Logger()
 tracer = Tracer()
 
 
+def _stem(uri: str) -> str:
+    return uri.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+
+
 @logger.inject_lambda_context()
 @tracer.capture_lambda_handler
 def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
@@ -26,8 +30,13 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         repo, children, message=f"Backfill partition {partition_id}"
     )
 
+    # Only skip files whose fork was saved: a worker that crashed between its
+    # skip put and its fork put is retried and writes a new pair under a new stem.
+    fork_stems = {_stem(uri) for uri in child_uris if uri.endswith(".pkl")}
     by_granule: dict[str, dict[str, Any]] = {}
     for uri in fork_store.list_forks(event["skipped_out_prefix"]):
+        if not uri.endswith(".json") or _stem(uri) not in fork_stems:
+            continue
         for record in inventory.read_json(uri):
             by_granule.setdefault(record["granule_id"], record)
     skipped = [by_granule[g] for g in sorted(by_granule)]

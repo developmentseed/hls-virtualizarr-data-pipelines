@@ -24,13 +24,16 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         if processor.process_backfill_file(file_key, child):
             continue
         # A "write" stage failure may have left the child fork partially
-        # written; raise (without saving) so Step Functions retries the batch
-        # with a fresh child fork. Other stages wrote nothing and are recorded.
+        # written; raise (without saving) so the WorkerTask retry (States.ALL,
+        # 3 attempts; see BackfillPipeline) reruns the batch with a fresh child
+        # fork. Other stages wrote nothing and are recorded.
         if processor.skipped and processor.skipped[-1].stage == "write":
             logger.error("Write failed", extra={"file_key": file_key})
             raise RuntimeError(f"process_backfill_file write failed for {file_key}")
         logger.warning("Skipped file", extra={"file_key": file_key})
 
+    # Skip records and the fork share a stem; reduce counts a skip file only
+    # when its fork exists, so a crash between the two puts leaves no orphan.
     stem = uuid.uuid4().hex
     if processor.skipped:
         inventory.write_json(

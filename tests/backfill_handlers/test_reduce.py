@@ -57,19 +57,24 @@ def test_reduce_writes_partition_skipped_json(
         },
         lambda_context,
     )
-    worker.handler(
-        {
-            "fork_in_uri": fr["fork_in_uri"],
-            "forks_out_prefix": fr["forks_out_prefix"],
-            "skipped_out_prefix": fr["skipped_out_prefix"],
-            "file_keys": hls_backfill.granule_ids[:1],
-        },
-        lambda_context,
-    )
+    base = {
+        "fork_in_uri": fr["fork_in_uri"],
+        "forks_out_prefix": fr["forks_out_prefix"],
+        "skipped_out_prefix": fr["skipped_out_prefix"],
+    }
+    stems = [
+        worker.handler({**base, "file_keys": [gid]}, lambda_context)["child_fork_uri"]
+        .rsplit("/", 1)[-1]
+        .removesuffix(".pkl")
+        for gid in hls_backfill.granule_ids[:2]
+    ]
     a = {"granule_id": "B", "stage": "open", "error": "x"}
     b = {"granule_id": "A", "stage": "parse", "error": "y"}
-    inventory.write_json(f"{fr['skipped_out_prefix']}1.json", [a, b])
-    inventory.write_json(f"{fr['skipped_out_prefix']}2.json", [a])
+    orphan = {"granule_id": "C", "stage": "open", "error": "z"}
+    inventory.write_json(f"{fr['skipped_out_prefix']}{stems[0]}.json", [a, b])
+    inventory.write_json(f"{fr['skipped_out_prefix']}{stems[1]}.json", [a])
+    # a worker that crashed between its skip put and its fork put
+    inventory.write_json(f"{fr['skipped_out_prefix']}orphan.json", [orphan])
 
     result = reduce.handler(
         {
