@@ -41,6 +41,7 @@ from virtualizarr_processor.hls.cube import (
 )
 from virtualizarr_processor.hls.granule import BANDS, Granule, granule_from_key
 from virtualizarr_processor.hls.grid import TileGrid, tile_grid
+from virtualizarr_processor.hls.manifests import manifest_splitting
 from virtualizarr_processor.hls.pyramid import Pyramid, PyramidOpener, open_pyramid
 from virtualizarr_processor.hls.sort import sort_time
 
@@ -103,7 +104,9 @@ class _Rejected(Exception):
     """A granule this processor's cube does not take."""
 
 
-def default_repo_opener(access: str) -> Callable[[], Repository]:
+def default_repo_opener(
+    access: str, *, product: str = "L30"
+) -> Callable[[], Repository]:
     """Open (or create) the cube repo from the environment.
 
     ``ICECHUNK_BUCKET`` (with optional ``ICECHUNK_PREFIX``/``ICECHUNK_REGION``)
@@ -142,6 +145,9 @@ def default_repo_opener(access: str) -> Callable[[], Repository]:
             cfg = icechunk.RepositoryConfig.default()
             cfg.set_virtual_chunk_container(container)
             cfg.caching = icechunk.CachingConfig(num_chunk_refs=num_chunk_refs)
+            cfg.manifest = icechunk.ManifestConfig(
+                splitting=manifest_splitting(product)
+            )
             return cfg
 
         credentials = container_credentials(access)
@@ -208,7 +214,9 @@ class Processor:
         self.opener = opener
         self.locator = locator if locator is not None else LpDaacLocator(self.access)
         self.repo_opener = (
-            repo_opener if repo_opener is not None else default_repo_opener(self.access)
+            repo_opener
+            if repo_opener is not None
+            else default_repo_opener(self.access, product=self.product)
         )
         if registry is None:
             registry = self._default_registry if opener is open_pyramid else _none

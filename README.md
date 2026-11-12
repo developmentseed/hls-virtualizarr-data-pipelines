@@ -108,10 +108,14 @@ local and never upload them to shared storage.
   none of this has been measured at that size: at first deploy, time the last
   Reduce, a forward commit and a forward sort, and watch the forward
   (`process_messages`) Lambda's memory and duration against its limits.
-- **Manifest splitting.** If those commits are slow or memory-bound, consider
-  icechunk's `ManifestSplittingConfig` splitting manifests along `time`, so a
-  commit rewrites only the manifests for the time steps it touched. It is not
-  configured today; it is a design change to decide at that point.
+- **Manifest splitting.** Band manifests are split along `time`
+  (`hls/manifests.py`): every 128 steps at levels 0-1 (~29k refs per split)
+  and every 512 at levels 2-4, so a forward append rewrites only the last
+  split of each array. The config is saved with the repo when it is created
+  and only governs manifests written afterwards: a repo created before this
+  change needs `rewrite_manifests` (or a rebuild) to pick it up. An
+  out-of-order granule still rewrites every split after its position when the
+  time sort runs.
 
 ### Integration test
 
