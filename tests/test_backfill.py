@@ -3,7 +3,10 @@
 import pickle
 from collections.abc import Callable
 
+import icechunk
+import pytest
 import xarray as xr
+import zarr
 from fakes import FakeAssets, write_all_bands
 from virtualizarr_processor import backfill
 from virtualizarr_processor.processor import Processor
@@ -68,3 +71,14 @@ def test_a_skipped_granule_leaves_a_fill_valued_step(
     assert results == [True, True, False, True, True, True]
     assert [r.granule_id for r in processor.skipped] == [IDS[2]]
     assert _b04_values(processor, "backfill") == [1, 2, 0, 4, 5, 6]
+
+
+def test_merge_and_commit_with_no_changes_raises_nothing_to_commit(tmp_path):
+    repo = icechunk.Repository.create(icechunk.local_filesystem_storage(str(tmp_path)))
+    session = repo.writable_session("main")
+    zarr.group(session.store)
+    session.commit("init")
+    repo.create_branch("backfill", repo.lookup_branch("main"))
+    child = pickle.loads(backfill.create_fork(repo)).fork()
+    with pytest.raises(backfill.NothingToCommit):
+        backfill.merge_and_commit(repo, [pickle.dumps(child)], message="empty")

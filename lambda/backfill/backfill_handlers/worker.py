@@ -30,7 +30,11 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         if processor.skipped and processor.skipped[-1].stage == "write":
             logger.error("Write failed", extra={"file_key": file_key})
             raise RuntimeError(f"process_backfill_file write failed for {file_key}")
-        logger.warning("Skipped file", extra={"file_key": file_key})
+        record = processor.skipped[-1]
+        logger.warning(
+            "Skipped file",
+            extra={"file_key": file_key, "stage": record.stage, "error": record.error},
+        )
 
     # Skip records and the fork share a stem; reduce counts a skip file only
     # when its fork exists, so a crash between the two puts leaves no orphan.

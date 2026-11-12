@@ -13,6 +13,10 @@ from typing import cast
 from icechunk import Repository
 
 
+class NothingToCommit(RuntimeError):
+    """The merged forks changed nothing: no worker wrote a granule."""
+
+
 def create_fork(repo: Repository, *, branch: str = "backfill") -> bytes:
     """Open a fresh writable session on `branch` and return a pickled fork.
 
@@ -33,11 +37,14 @@ def merge_and_commit(
 ) -> str:
     """Open a fresh writable session, merge all child forks, and commit once.
 
-    Returns the new tip snapshot id.
+    Returns the new tip snapshot id. Raises ``NothingToCommit`` when the
+    forks carry no changes, rather than icechunk's generic commit error.
     """
     session = repo.writable_session(branch)
     forks = [pickle.loads(b) for b in child_fork_bytes]
     session.merge(*forks)
+    if not session.has_uncommitted_changes:
+        raise NothingToCommit(f"no changes to commit on {branch!r}")
     # cast: pre-commit mypy runs without icechunk, so commit() is Any there and
     # warn_return_any flags a bare return. Do not remove.
     return cast(str, session.commit(message))
