@@ -14,6 +14,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../lambda"
 
+# The HLS processor imports these lazily (inside functions), so a plain handler
+# import would not catch them missing from an image that reads COGs.
+LAZY="import boto3, obstore, virtual_tiff; from virtual_tiff import VirtualTIFF; from obspec_utils.registry import ObjectStoreRegistry; from virtualizarr import open_virtual_datatree"
+
 # name | dockerfile | import statement (as the runtime CMD imports it) | workdir
 check() {
   local name="$1" dockerfile="$2" stmt="$3" workdir="${4:-/var/task}"
@@ -25,8 +29,8 @@ check() {
 }
 
 check backfill "backfill/Dockerfile" \
-  "import backfill_handlers.init, backfill_handlers.partition, backfill_handlers.fork, backfill_handlers.worker, backfill_handlers.reduce, backfill_handlers.promote"
-check process_messages "process_messages/Dockerfile" "import handler"
+  "import backfill_handlers.init, backfill_handlers.partition, backfill_handlers.fork, backfill_handlers.worker, backfill_handlers.reduce, backfill_handlers.promote; $LAZY"
+check process_messages "process_messages/Dockerfile" "import handler; $LAZY"
 check initialize "initialize/Dockerfile" "import handler"
 check garbage_collect "garbage_collect/Dockerfile" \
   "from garbage_collect.handler import handler" "/app"
