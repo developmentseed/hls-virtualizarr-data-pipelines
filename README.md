@@ -131,6 +131,10 @@ It needs AWS credentials for the cube's bucket and an Earthdata login in `~/.net
 Set `HLS_CUBE_LOCAL=<path>` to read a local repo instead. Any reader must
 `import virtual_tiff`, which registers the TIFF codecs zarr needs to decode chunks.
 
+`notebooks/explore_t13sda_standalone.ipynb` is the same walkthrough with no dependency on
+this repo: its first cell pip-installs pinned packages (Python >= 3.12), so it runs on any
+JupyterHub given read access to the cube's bucket and an Earthdata login.
+
 ### Integration test
 
 `HLS_NETWORK_TESTS=1 uv run --with rasterio pytest tests/integration -v -m network`
